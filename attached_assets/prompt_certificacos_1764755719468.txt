@@ -1,0 +1,19 @@
+Concepto General La solución consiste en una plataforma web privada diseñada para digitalizar y blindar la entrega de certificaciones de su empresa. En lugar de procesar diplomas manualmente, el sistema permitirá a los administradores subir una planilla Excel con el listado de cientos de alumnos y sus respectivos cursos. Automáticamente, la plataforma procesará esta información y generará un código QR único por cada persona.
+
+Este QR funcionará como un sello de garantía: al ser escaneado por cualquier celular (por ejemplo, por un fiscalizador o un cliente), mostrará inmediatamente una "Ficha Digital" en pantalla que confirmará que esa persona efectivamente realizó la capacitación, el tipo de curso, el número de certificado y si este se encuentra vigente. Esto elimina el riesgo de falsificaciones y agiliza la gestión operativa al permitir cargas masivas de datos en segundos.
+Listado de Funcionalidades y Entregables
+A continuación, se detallan las funciones específicas que tendrá el desarrollo:
+
+Panel de Administración Seguro: Acceso mediante usuario y contraseña para que solo el personal autorizado de la empresa pueda emitir certificados.
+
+Gestión de "Tipos de Certificado": Módulo para crear y guardar el catálogo de cursos (ej: "Altura", "Extintores", "Inducción"). Esto permite estandarizar los nombres y asociarlos fácilmente a los alumnos.
+
+Importador Masivo de Datos (Excel/CSV): Función inteligente que permite subir un archivo con la lista de alumnos (RUT, Nombre, Curso, Fecha) y los carga al sistema automáticamente, evitando el ingreso manual uno por uno.
+
+Generador Automático de QRs: Motor que crea un código QR único e irrepetible asociado a cada fila del Excel cargado. Este QR contiene la dirección web (URL) segura de validación.
+
+Página de Validación Pública (Web Móvil): La interfaz que ve el usuario al escanear el QR. Es una página limpia y rápida, adaptada a celulares, que muestra los datos oficiales: Nombre del Alumno, Curso Aprobado, N° de Certificado y Estado (Válido/Vencido).
+
+Buscador y Registro Histórico: Una base de datos interna donde la empresa podrá buscar cualquier certificado emitido anteriormente por nombre o RUT para auditarlo o volver a imprimir el QR si se pierde.
+
+Exportación de Resultados: Capacidad de descargar los códigos QR generados (en formato imagen o PDF) para que puedan ser pegados en credenciales físicas, diplomas o enviados por correo.
