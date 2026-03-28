@@ -7,6 +7,7 @@ import { jsPDF } from "jspdf";
 import JSZip from "jszip";
 import { nanoid } from "nanoid";
 import { storage } from "./storage";
+import { uploadFile } from "./supabaseStorage";
 import { 
   isAuthenticated, 
   requireAdmin, 
@@ -568,10 +569,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: "El archivo es demasiado grande. Máximo 2MB." });
       }
 
-      // Convert file to base64 data URL
-      const base64 = req.file.buffer.toString("base64");
-      const mimeType = req.file.mimetype;
-      const logoUrl = `data:${mimeType};base64,${base64}`;
+      // Upload to Supabase Storage
+      const logoUrl = await uploadFile(req.file.buffer, req.file.mimetype, "business-logos");
 
       // Update business with logo
       const business = await storage.updateBusiness(req.user.businessId, { logoUrl });
@@ -889,11 +888,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: "Invalid data", errors: validation.error.flatten().fieldErrors });
       }
       
-      // Handle signature image upload - convert to base64
+      // Handle signature image upload to Supabase Storage
       let signatureUrl: string | undefined;
       if (req.file) {
-        const base64 = req.file.buffer.toString('base64');
-        signatureUrl = `data:${req.file.mimetype};base64,${base64}`;
+        signatureUrl = await uploadFile(req.file.buffer, req.file.mimetype, "signatures");
       }
       
       const signer = await storage.createSigner({
@@ -930,10 +928,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (req.body.position) updateData.position = req.body.position;
       if (req.body.displayOrder !== undefined) updateData.displayOrder = parseInt(req.body.displayOrder);
       
-      // Handle signature image upload
+      // Handle signature image upload to Supabase Storage
       if (req.file) {
-        const base64 = req.file.buffer.toString('base64');
-        updateData.signatureUrl = `data:${req.file.mimetype};base64,${base64}`;
+        updateData.signatureUrl = await uploadFile(req.file.buffer, req.file.mimetype, "signatures");
       }
       
       const signer = await storage.updateSigner(signerId, updateData);
@@ -1023,9 +1020,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ message: "Invalid data", errors: validation.error.flatten().fieldErrors });
       }
       
-      // Convert image to base64
-      const base64 = req.file.buffer.toString('base64');
-      const logoUrl = `data:${req.file.mimetype};base64,${base64}`;
+      // Upload to Supabase Storage
+      const logoUrl = await uploadFile(req.file.buffer, req.file.mimetype, "cert-logos");
       
       const logo = await storage.createLogo({
         certificateTypeId: id,
@@ -1059,10 +1055,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (req.body.name !== undefined) updateData.name = req.body.name;
       if (req.body.displayOrder !== undefined) updateData.displayOrder = parseInt(req.body.displayOrder);
       
-      // Handle logo image upload
+      // Handle logo image upload to Supabase Storage
       if (req.file) {
-        const base64 = req.file.buffer.toString('base64');
-        updateData.logoUrl = `data:${req.file.mimetype};base64,${base64}`;
+        updateData.logoUrl = await uploadFile(req.file.buffer, req.file.mimetype, "cert-logos");
       }
       
       const logo = await storage.updateLogo(logoId, updateData);
@@ -1562,6 +1557,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Helper: Convert image URL (Supabase or base64 data URL) to base64 data URL for jsPDF
+  async function fetchImageAsDataUrl(url: string): Promise<string> {
+    // If it's already a base64 data URL, return as-is
+    if (url.startsWith("data:")) {
+      return url;
+    }
+    // Fetch remote URL and convert to base64
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const contentType = response.headers.get("content-type") || "image/png";
+      return `data:${contentType};base64,${buffer.toString("base64")}`;
+    } catch (e) {
+      console.error("Error fetching image for PDF:", url, e);
+      return url; // Return original, jsPDF will handle the error
+    }
+  }
+
   app.get("/api/certificates/:id/pdf", isAuthenticated, requireAnyRole, async (req: Request, res: Response) => {
     try {
       console.log("PDF generation started for certificate:", req.params.id);
@@ -1587,9 +1601,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       let businessData: { logoUrl: string | null } | null = null;
       if (certificate.businessId) {
         const business = await storage.getBusiness(certificate.businessId);
-        businessData = business || null;
+        businessData = business ? { logoUrl: business.logoUrl } : null;
         if (business?.logoUrl) {
-          businessLogo = business.logoUrl;
+          businessLogo = await fetchImageAsDataUrl(business.logoUrl);
+          businessData = { logoUrl: businessLogo };
+        }
+      }
+      
+      // Pre-fetch all signer signature images for PDF rendering
+      for (const signer of signers) {
+        if (signer.signatureUrl) {
+          (signer as any).signatureUrl = await fetchImageAsDataUrl(signer.signatureUrl);
+        }
+      }
+      
+      // Pre-fetch all logo images for PDF rendering
+      for (const logo of logos) {
+        if (logo.logoUrl) {
+          (logo as any).logoUrl = await fetchImageAsDataUrl(logo.logoUrl);
         }
       }
       

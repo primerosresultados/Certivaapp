@@ -4,6 +4,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { seedSuperadmin } from "./jwtAuth";
+import { ensureBucket } from "./supabaseStorage";
 
 const app = express();
 const httpServer = createServer(app);
@@ -64,6 +65,9 @@ app.use((req, res, next) => {
 (async () => {
   // Seed the superadmin user on startup
   await seedSuperadmin();
+  
+  // Ensure Supabase Storage bucket exists
+  await ensureBucket();
   
   await registerRoutes(httpServer, app);
 
