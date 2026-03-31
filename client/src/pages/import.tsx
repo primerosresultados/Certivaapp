@@ -237,7 +237,17 @@ export default function Import() {
     const workbook = XLSX.read(data);
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
-    const jsonData = XLSX.utils.sheet_to_json<any>(sheet, { header: 1 });
+    const jsonData = XLSX.utils.sheet_to_json<any>(sheet, { header: 1, raw: false, dateNF: 'yyyy-mm-dd' });
+
+    // Helper to get raw cell text value from the sheet (avoids Excel number interpretation)
+    const getCellText = (row: number, col: number): string => {
+      const cellRef = XLSX.utils.encode_cell({ r: row, c: col });
+      const cell = sheet[cellRef];
+      if (!cell) return '';
+      if (cell.w !== undefined) return String(cell.w).trim();
+      if (cell.v !== undefined) return String(cell.v).trim();
+      return '';
+    };
 
     const headers = jsonData[0] as string[];
     const dataRows = jsonData.slice(1).filter((row: any[]) => row.some(cell => cell !== undefined && cell !== ""));
@@ -246,18 +256,23 @@ export default function Import() {
     const columnMapping = config.columnMapping;
     const requiredColumns = config.requiredColumns;
 
-    const rows: ParsedRow[] = dataRows.map((row: any[]) => {
+    const rows: ParsedRow[] = dataRows.map((row: any[], rowIdx: number) => {
       const errors: string[] = [];
       const rowData: Record<string, string> = {};
 
       for (const [key, possibleNames] of Object.entries(columnMapping)) {
         const idx = findColumnIndex(headers, possibleNames as string[]);
         if (idx >= 0 && row[idx] !== undefined) {
-          let value = String(row[idx]).trim();
+          let value: string;
           
-          if (key === "fecha" && typeof row[idx] === "number") {
+          // For RUT fields, read directly from the sheet cell to avoid number interpretation
+          if (key === "rut") {
+            value = getCellText(rowIdx + 1, idx);
+          } else if (key === "fecha" && typeof row[idx] === "number") {
             const date = XLSX.SSF.parse_date_code(row[idx]);
             value = `${date.y}-${String(date.m).padStart(2, "0")}-${String(date.d).padStart(2, "0")}`;
+          } else {
+            value = String(row[idx]).trim();
           }
           
           rowData[key] = value;

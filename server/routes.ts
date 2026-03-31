@@ -30,9 +30,9 @@ import { z } from "zod";
 const upload = multer({ storage: multer.memoryStorage() });
 
 function validateRut(rut: string): boolean {
-  // Simple validation: just check if it has at least 2 characters (numbers and optional K at the end)
+  // Validate RUT: must be between 2 and 12 characters (Chilean RUTs are 7-9 digits + verifier)
   const cleanRut = rut.replace(/[^0-9kK]/g, '');
-  return cleanRut.length >= 2;
+  return cleanRut.length >= 2 && cleanRut.length <= 12;
 }
 
 function generateCertificateNumber(): string {
@@ -2145,7 +2145,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
       const sheetName = workbook.SheetNames[0];
       const sheet = workbook.Sheets[sheetName];
-      const jsonData = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
+      const jsonData = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: false, dateNF: 'yyyy-mm-dd' });
+
+      // Helper to get raw cell text value from the sheet (avoids Excel number interpretation)
+      const getCellText = (row: number, col: number): string => {
+        const cellRef = XLSX.utils.encode_cell({ r: row, c: col });
+        const cell = sheet[cellRef];
+        if (!cell) return '';
+        // If the cell has a 'w' (formatted text) value, use it; otherwise use 'v' (raw value)
+        if (cell.w !== undefined) return String(cell.w).trim();
+        if (cell.v !== undefined) return String(cell.v).trim();
+        return '';
+      };
 
       const headers = jsonData[0] as string[];
       const dataRows = jsonData.slice(1).filter((row) => (row as unknown[]).some(cell => cell !== undefined && cell !== ""));
@@ -2232,7 +2243,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const rowErrors: string[] = [];
 
         const studentName = String(row[nameIdx >= 0 ? nameIdx : 0] || "").trim();
-        const studentRut = String(row[rutIdx >= 0 ? rutIdx : 1] || "").trim().replace(/[^0-9kK]/g, '');
+        // Read RUT directly from the sheet cell to avoid Excel number interpretation
+        const rawRut = rutIdx >= 0 ? getCellText(i + 1, rutIdx) : String(row[1] || "").trim();
+        const studentRut = rawRut.replace(/[^0-9kK]/g, '');
+        if (i === 0) {
+          console.log("[IMPORT DEBUG] First row RUT - raw:", rawRut, "clean:", studentRut, "from array:", row[rutIdx >= 0 ? rutIdx : 1]);
+        }
         let issueDate = "";
         const equipment = equipmentIdx >= 0 ? String(row[equipmentIdx] || "").trim() : undefined;
         const nomenclature = nomenclatureIdx >= 0 ? String(row[nomenclatureIdx] || "").trim() : undefined;
@@ -2382,14 +2398,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
       const sheetName = workbook.SheetNames[0];
       const sheet = workbook.Sheets[sheetName];
-      const jsonData = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
+      const jsonData = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: false, dateNF: 'yyyy-mm-dd' });
+
+      // Helper to get raw cell text value from the sheet
+      const getCellText = (row: number, col: number): string => {
+        const cellRef = XLSX.utils.encode_cell({ r: row, c: col });
+        const cell = sheet[cellRef];
+        if (!cell) return '';
+        if (cell.w !== undefined) return String(cell.w).trim();
+        if (cell.v !== undefined) return String(cell.v).trim();
+        return '';
+      };
 
       const headers = jsonData[0] as string[];
       const dataRows = jsonData.slice(1).filter((row) => (row as unknown[]).some(cell => cell !== undefined && cell !== ""));
 
-      // Find column indices
+      // Find column indices - use exact matching for RUT to avoid false positives
       const nameIdx = headers.findIndex(h => /nombre/i.test(String(h)) || /name/i.test(String(h)));
-      const rutIdx = headers.findIndex(h => /rut/i.test(String(h)) || /dni/i.test(String(h)) || /id/i.test(String(h)));
+      const rutIdx = headers.findIndex(h => {
+        const n = String(h).toLowerCase().trim();
+        return n === 'rut' || n === 'dni' || n === 'rut alumno';
+      });
       const emailIdx = headers.findIndex(h => /email/i.test(String(h)) || /correo/i.test(String(h)));
       const phoneIdx = headers.findIndex(h => /telefono|teléfono|phone/i.test(String(h)));
 
@@ -2408,7 +2437,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const rowErrors: string[] = [];
 
         const name = String(row[nameIdx >= 0 ? nameIdx : 0] || "").trim();
-        const rut = String(row[rutIdx >= 0 ? rutIdx : 1] || "").trim().replace(/[^0-9kK]/g, '');
+        // Read RUT directly from the sheet cell to avoid Excel number interpretation
+        const rawRut = rutIdx >= 0 ? getCellText(i + 1, rutIdx) : String(row[1] || "").trim();
+        const rut = rawRut.replace(/[^0-9kK]/g, '');
         const email = emailIdx >= 0 ? String(row[emailIdx] || "").trim() : undefined;
         const phone = phoneIdx >= 0 ? String(row[phoneIdx] || "").trim() : undefined;
 
@@ -2472,7 +2503,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
       const sheetName = workbook.SheetNames[0];
       const sheet = workbook.Sheets[sheetName];
-      const jsonData = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
+      const jsonData = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: false, dateNF: 'yyyy-mm-dd' });
+
+      // Helper to get raw cell text value from the sheet
+      const getCellText = (row: number, col: number): string => {
+        const cellRef = XLSX.utils.encode_cell({ r: row, c: col });
+        const cell = sheet[cellRef];
+        if (!cell) return '';
+        if (cell.w !== undefined) return String(cell.w).trim();
+        if (cell.v !== undefined) return String(cell.v).trim();
+        return '';
+      };
 
       const headers = jsonData[0] as string[];
       const dataRows = jsonData.slice(1).filter((row) => (row as unknown[]).some(cell => cell !== undefined && cell !== ""));
@@ -2502,7 +2543,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const rowErrors: string[] = [];
 
         const name = String(row[nameIdx >= 0 ? nameIdx : 0] || "").trim();
-        const rut = rutIdx >= 0 ? String(row[rutIdx] || "").trim().replace(/[^0-9kK]/g, '') : undefined;
+        // Read RUT directly from the sheet cell to avoid Excel number interpretation
+        const rawRut = rutIdx >= 0 ? getCellText(i + 1, rutIdx) : '';
+        const rut = rawRut ? rawRut.replace(/[^0-9kK]/g, '') : undefined;
         const address = addressIdx >= 0 ? String(row[addressIdx] || "").trim() : undefined;
         const contactName = contactNameIdx >= 0 ? String(row[contactNameIdx] || "").trim() : undefined;
         const contactEmail = contactEmailIdx >= 0 ? String(row[contactEmailIdx] || "").trim() : undefined;

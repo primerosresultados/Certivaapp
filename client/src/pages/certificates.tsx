@@ -556,7 +556,7 @@ export default function Certificates() {
       const workbook = XLSX.read(data);
       const sheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[sheetName];
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
+      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false, dateNF: 'yyyy-mm-dd' }) as any[][];
       
       if (jsonData.length < 2) {
         setImportErrors(["El archivo debe tener al menos una fila de datos además del encabezado"]);
