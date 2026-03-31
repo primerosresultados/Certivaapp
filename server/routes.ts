@@ -2158,15 +2158,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         businessId: businessId || undefined,
       });
 
-      // Find column indices
-      const nameIdx = headers.findIndex(h => /nombre/i.test(String(h)) || /name/i.test(String(h)));
-      const rutIdx = headers.findIndex(h => /rut/i.test(String(h)) || /dni/i.test(String(h)) || /id/i.test(String(h)));
-      const dateIdx = headers.findIndex(h => /fecha/i.test(String(h)) || /date/i.test(String(h)));
-      const equipmentIdx = headers.findIndex(h => /equipo|maquinaria|equipment/i.test(String(h)));
-      const nomenclatureIdx = headers.findIndex(h => /nomenclatura|nomenclature|modelo|model/i.test(String(h)));
-      const emailIdx = headers.findIndex(h => /email|correo/i.test(String(h)));
-      const phoneIdx = headers.findIndex(h => /telefono|teléfono|phone|celular/i.test(String(h)));
-      const companyNameIdx = headers.findIndex(h => /empresa|company|compañía|compania/i.test(String(h)));
+      // Find column indices - use exact header matching to avoid false positives
+      const normalizeHeader = (h: any) => String(h).toLowerCase().trim();
+      const nameIdx = headers.findIndex(h => {
+        const n = normalizeHeader(h);
+        return n === "nombre" || n === "name" || n === "nombre alumno" || n === "nombre completo";
+      });
+      const rutIdx = headers.findIndex(h => {
+        const n = normalizeHeader(h);
+        return n === "rut" || n === "dni" || n === "rut alumno";
+      });
+      const dateIdx = headers.findIndex(h => {
+        const n = normalizeHeader(h);
+        return n === "fecha" || n === "date" || n === "fecha emisión" || n === "fecha emision";
+      });
+      const equipmentIdx = headers.findIndex(h => /^(equipo|maquinaria|equipment)$/i.test(String(h).trim()));
+      const nomenclatureIdx = headers.findIndex(h => /^(nomenclatura|nomenclature|modelo|model)$/i.test(String(h).trim()));
+      const emailIdx = headers.findIndex(h => {
+        const n = normalizeHeader(h);
+        return n === "email" || n === "correo" || n === "e-mail";
+      });
+      const phoneIdx = headers.findIndex(h => {
+        const n = normalizeHeader(h);
+        return n === "telefono" || n === "teléfono" || n === "phone" || n === "celular";
+      });
+      const companyNameIdx = headers.findIndex(h => {
+        const n = normalizeHeader(h);
+        return n === "empresa" || n === "company" || n === "compañía" || n === "compania";
+      });
 
       // Build custom field column indices
       const customFieldIndices: Array<{ fieldName: string; fieldLabel: string; isRequired: boolean; idx: number }> = [];
@@ -2328,12 +2347,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json({
         message: "Import completed",
         created: createdCerts.length,
+        totalRecords: certificatesToCreate.length + errors.length,
+        successfulRecords: createdCerts.length,
         failed: errors.length,
         errors: errors.slice(0, 10),
       });
-    } catch (error) {
-      console.error("Error importing:", error);
-      res.status(500).json({ message: "Failed to import data" });
+    } catch (error: any) {
+      console.error("Error importing:", error?.message || error);
+      console.error("Stack:", error?.stack);
+      res.status(500).json({ message: error?.message || "Failed to import data" });
     }
   });
 

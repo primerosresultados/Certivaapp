@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { CertificateWithType } from "@shared/schema";
-import { getCertificateStatus, formatDate, formatRut } from "@/lib/authUtils";
+import { getCertificateStatus, formatDate, formatRut, getCategoryLabel } from "@/lib/authUtils";
 
 function InfoRow({ icon: Icon, label, value }: {
   icon: typeof User;
@@ -71,20 +71,20 @@ function LoadingSkeleton() {
   );
 }
 
-function StatusDisplay({ status }: { status: 'valid' | 'expired' | 'expiring_soon' }) {
+function StatusDisplay({ status, categoryLabel }: { status: 'valid' | 'expired' | 'expiring_soon'; categoryLabel: string }) {
   const config = {
     valid: {
       icon: ShieldCheck,
-      title: 'Certificado Válido',
-      subtitle: 'Este certificado se encuentra vigente',
+      title: `${categoryLabel} Válid${categoryLabel === 'Capacitación' || categoryLabel === 'Certificación' ? 'a' : 'o'}`,
+      subtitle: `Este documento se encuentra vigente`,
       iconBg: 'bg-green-500/10',
       iconColor: 'text-green-600 dark:text-green-400',
       borderColor: 'border-green-500/20',
     },
     expired: {
       icon: ShieldX,
-      title: 'Certificado Vencido',
-      subtitle: 'Este certificado ha expirado',
+      title: `${categoryLabel} Vencid${categoryLabel === 'Capacitación' || categoryLabel === 'Certificación' ? 'a' : 'o'}`,
+      subtitle: `Este documento ha expirado`,
       iconBg: 'bg-red-500/10',
       iconColor: 'text-red-600 dark:text-red-400',
       borderColor: 'border-red-500/20',
@@ -92,7 +92,7 @@ function StatusDisplay({ status }: { status: 'valid' | 'expired' | 'expiring_soo
     expiring_soon: {
       icon: ShieldAlert,
       title: 'Próximo a Vencer',
-      subtitle: 'Este certificado vence pronto',
+      subtitle: `Este documento vence pronto`,
       iconBg: 'bg-yellow-500/10',
       iconColor: 'text-yellow-600 dark:text-yellow-400',
       borderColor: 'border-yellow-500/20',
@@ -128,6 +128,7 @@ export default function Validate() {
   }
 
   const status = certificate ? getCertificateStatus(certificate.expiryDate) : null;
+  const categoryLabel = certificate ? getCategoryLabel(certificate.certificateType?.category) : 'Certificado';
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -147,7 +148,7 @@ export default function Validate() {
         {certificate && status ? (
           <Card className="w-full max-w-md shadow-lg">
             <CardContent className="p-6 space-y-6">
-              <StatusDisplay status={status} />
+              <StatusDisplay status={status} categoryLabel={categoryLabel} />
 
               <div className="space-y-1 divide-y divide-border">
                 <div className="pb-3">
@@ -165,12 +166,12 @@ export default function Validate() {
 
                 <InfoRow 
                   icon={Award} 
-                  label="Curso Aprobado" 
+                  label={`${categoryLabel} Aprobado`} 
                   value={certificate.certificateType?.name || "N/A"} 
                 />
                 <InfoRow 
                   icon={Hash} 
-                  label="N° Certificado" 
+                  label={`N° ${categoryLabel}`} 
                   value={certificate.certificateNumber} 
                 />
                 <InfoRow 
@@ -217,10 +218,10 @@ export default function Validate() {
                 <XCircle className="w-10 h-10" />
               </div>
               <h2 className="text-2xl font-bold text-red-600 dark:text-red-400 mb-2">
-                Certificado No Encontrado
+                Documento No Encontrado
               </h2>
               <p className="text-muted-foreground">
-                El certificado solicitado no existe en nuestros registros o el enlace es inválido.
+                El documento solicitado no existe en nuestros registros o el enlace es inválido.
               </p>
             </CardContent>
           </Card>

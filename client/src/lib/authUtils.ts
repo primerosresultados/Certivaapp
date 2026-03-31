@@ -63,3 +63,29 @@ export function formatDate(date: string | Date): string {
     year: 'numeric',
   });
 }
+
+/**
+ * Returns the proper term based on the certificate type category.
+ * - "cursos" → Curso
+ * - "capacitaciones" → Capacitación  
+ * - "certificaciones" → Certificación
+ * Falls back to "Certificado" if unknown.
+ */
+export function getCategoryLabel(category?: string | null): string {
+  switch (category) {
+    case "cursos": return "Curso";
+    case "capacitaciones": return "Capacitación";
+    case "certificaciones": return "Certificación";
+    default: return "Certificado";
+  }
+}
+
+/** Plural version */
+export function getCategoryLabelPlural(category?: string | null): string {
+  switch (category) {
+    case "cursos": return "Cursos";
+    case "capacitaciones": return "Capacitaciones";
+    case "certificaciones": return "Certificaciones";
+    default: return "Certificados";
+  }
+}

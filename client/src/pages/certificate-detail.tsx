@@ -25,7 +25,7 @@ import {
   FileText
 } from "lucide-react";
 import type { CertificateWithType } from "@shared/schema";
-import { getCertificateStatus, formatDate, formatRut } from "@/lib/authUtils";
+import { getCertificateStatus, formatDate, formatRut, getCategoryLabel } from "@/lib/authUtils";
 
 function StatusBadge({ status }: { status: 'valid' | 'expired' | 'expiring_soon' }) {
   const config = {
@@ -173,6 +173,7 @@ export default function CertificateDetail() {
   }
 
   const status = getCertificateStatus(certificate.expiryDate);
+  const categoryLabel = getCategoryLabel(certificate.certificateType?.category);
   const validationUrl = `${window.location.origin}/validate/${certificate.id}`;
 
   const handleCopyUrl = () => {
@@ -231,7 +232,7 @@ export default function CertificateDetail() {
       
       // Extract filename from Content-Disposition header
       const contentDisposition = response.headers.get("Content-Disposition");
-      let filename = `Certificado-${certificate.certificateNumber}.pdf`;
+      let filename = `${categoryLabel}-${certificate.certificateNumber}.pdf`;
       if (contentDisposition) {
         const match = contentDisposition.match(/filename="(.+)"/);
         if (match) filename = match[1];
@@ -269,7 +270,7 @@ export default function CertificateDetail() {
               <StatusBadge status={status} />
             </div>
             <p className="text-muted-foreground">
-              Certificado N° {certificate.certificateNumber}
+              {categoryLabel} N° {certificate.certificateNumber}
             </p>
           </div>
         </div>
@@ -292,7 +293,7 @@ export default function CertificateDetail() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <User className="w-5 h-5 text-muted-foreground" />
-              Información del Certificado
+              Información del {categoryLabel}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -310,12 +311,12 @@ export default function CertificateDetail() {
               />
               <InfoRow 
                 icon={Award} 
-                label="Tipo de Curso" 
+                label={`Tipo de ${categoryLabel}`} 
                 value={certificate.certificateType?.name || "N/A"} 
               />
               <InfoRow 
                 icon={Hash} 
-                label="N° Certificado" 
+                label={`N° ${categoryLabel}`} 
                 value={certificate.certificateNumber} 
                 mono 
               />
@@ -416,7 +417,7 @@ export default function CertificateDetail() {
                 data-testid="button-download-pdf-2"
               >
                 <Download className="w-4 h-4" />
-                {isDownloading ? "Descargando..." : "Descargar Certificado (PDF)"}
+                {isDownloading ? "Descargando..." : `Descargar ${categoryLabel} (PDF)`}
               </Button>
             </div>
           </CardContent>
