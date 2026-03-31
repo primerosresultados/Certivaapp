@@ -927,7 +927,7 @@ export default function Certificates() {
         setMassImportDialogOpen(open);
         if (!open) resetImportState();
       }}>
-        <DialogContent className="w-[95vw] sm:max-w-[650px] max-h-[85vh] overflow-y-auto overflow-x-hidden">
+        <DialogContent className="w-[95vw] sm:max-w-[650px] max-h-[85vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle className="text-lg sm:text-xl">Crear Certificados en Forma Masiva</DialogTitle>
             <DialogDescription>
@@ -935,7 +935,7 @@ export default function Certificates() {
             </DialogDescription>
           </DialogHeader>
           
-          <div className="space-y-4">
+          <div className="space-y-4 overflow-y-auto flex-1 min-h-0 pr-1">
             <div className="space-y-2">
               <Label>Tipo de Certificado</Label>
               <Select value={selectedImportTypeId} onValueChange={setSelectedImportTypeId}>
@@ -1042,7 +1042,7 @@ export default function Certificates() {
                 {previewData.length > 0 && (
                   <div className="space-y-2 min-w-0">
                     <Label>Vista previa ({previewData.length} filas)</Label>
-                    <div className="border rounded-lg overflow-x-auto max-w-full">
+                    <div className="border rounded-lg overflow-auto max-w-full max-h-[200px]">
                       <Table>
                         <TableHeader>
                           <TableRow>
@@ -1086,7 +1086,7 @@ export default function Certificates() {
             )}
           </div>
 
-          <DialogFooter className="gap-2 mt-4">
+          <DialogFooter className="gap-2 pt-4 border-t shrink-0">
             <Button
               variant="outline"
               onClick={() => {

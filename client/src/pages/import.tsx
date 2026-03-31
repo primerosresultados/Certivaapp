@@ -468,7 +468,7 @@ export default function Import() {
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
-        <TabsList className="grid w-full grid-cols-2 max-w-md">
+        <TabsList className="grid w-full grid-cols-3 max-w-lg">
           <TabsTrigger value="students" className="gap-2" data-testid="tab-students">
             <GraduationCap className="w-4 h-4" />
             Alumnos
@@ -476,6 +476,10 @@ export default function Import() {
           <TabsTrigger value="companies" className="gap-2" data-testid="tab-companies">
             <Building2 className="w-4 h-4" />
             Empresas
+          </TabsTrigger>
+          <TabsTrigger value="certificates" className="gap-2" data-testid="tab-certificates">
+            <Award className="w-4 h-4" />
+            Certificados
           </TabsTrigger>
         </TabsList>
 
