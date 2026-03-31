@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -234,6 +235,8 @@ export default function Certificates() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [certificateToDelete, setCertificateToDelete] = useState<CertificateWithType | null>(null);
   const [isDownloadingZip, setIsDownloadingZip] = useState(false);
+  const [selectedCerts, setSelectedCerts] = useState<Set<string>>(new Set());
+  const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const perPage = 25;
   const { toast } = useToast();
@@ -365,9 +368,62 @@ export default function Certificates() {
     }
   };
 
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      const res = await apiRequest("POST", "/api/certificates/bulk-delete", { ids });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Certificados eliminados",
+        description: `Se eliminaron ${data.deleted} certificados correctamente.`,
+      });
+      setSelectedCerts(new Set());
+      queryClient.invalidateQueries({ predicate: (query) => {
+        const key = query.queryKey[0];
+        return typeof key === 'string' && key.startsWith('/api/certificates');
+      }});
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard/stats"] });
+      setBulkDeleteDialogOpen(false);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message || "No se pudieron eliminar los certificados.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const toggleSelectCert = useCallback((id: string) => {
+    setSelectedCerts(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
   const certificates = response?.certificates || [];
   const total = response?.total || 0;
   const totalPages = Math.ceil(total / perPage);
+
+  const toggleSelectAll = useCallback(() => {
+    if (selectedCerts.size === certificates.length) {
+      setSelectedCerts(new Set());
+    } else {
+      setSelectedCerts(new Set(certificates.map(c => c.id)));
+    }
+  }, [certificates, selectedCerts.size]);
+
+  const confirmBulkDelete = () => {
+    bulkDeleteMutation.mutate(Array.from(selectedCerts));
+  };
+
+  // Clear selection when page/filters change
+  useEffect(() => {
+    setSelectedCerts(new Set());
+  }, [page, search, statusFilter, typeFilter]);
 
   const handleCreateSubmit = async (data: CreateCertificateData) => {
     let companyId = selectedCompanyId === "none" ? undefined : selectedCompanyId;
@@ -1185,6 +1241,14 @@ export default function Certificates() {
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-10">
+                        <Checkbox
+                          checked={certificates.length > 0 && selectedCerts.size === certificates.length}
+                          onCheckedChange={toggleSelectAll}
+                          aria-label="Seleccionar todos"
+                          data-testid="checkbox-select-all"
+                        />
+                      </TableHead>
                       <TableHead>Nombre</TableHead>
                       <TableHead>RUT</TableHead>
                       <TableHead>Curso</TableHead>
@@ -1204,7 +1268,15 @@ export default function Certificates() {
                     {certificates.map((cert) => {
                       const status = getCertificateStatus(cert.expiryDate);
                       return (
-                        <TableRow key={cert.id} data-testid={`row-certificate-${cert.id}`}>
+                        <TableRow key={cert.id} data-testid={`row-certificate-${cert.id}`} className={selectedCerts.has(cert.id) ? "bg-primary/5" : ""}>
+                          <TableCell>
+                            <Checkbox
+                              checked={selectedCerts.has(cert.id)}
+                              onCheckedChange={() => toggleSelectCert(cert.id)}
+                              aria-label={`Seleccionar ${cert.studentName}`}
+                              data-testid={`checkbox-cert-${cert.id}`}
+                            />
+                          </TableCell>
                           <TableCell className="font-medium">{cert.studentName}</TableCell>
                           <TableCell className="font-mono text-sm">
                             {formatRut(cert.studentRut)}
@@ -1258,6 +1330,33 @@ export default function Certificates() {
               <MobileCard key={cert.id} certificate={cert} onDownload={handleDirectDownload} />
             ))}
           </div>
+
+          {/* Floating bulk action bar */}
+          {selectedCerts.size > 0 && (
+            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-destructive text-destructive-foreground shadow-2xl rounded-full px-6 py-3 flex items-center gap-4 animate-in slide-in-from-bottom-4 duration-300">
+              <span className="text-sm font-medium">
+                {selectedCerts.size} {selectedCerts.size === 1 ? "certificado seleccionado" : "certificados seleccionados"}
+              </span>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => setSelectedCerts(new Set())}
+                className="text-xs h-8"
+              >
+                Deseleccionar
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => setBulkDeleteDialogOpen(true)}
+                className="text-xs h-8 bg-white text-destructive hover:bg-white/90"
+                data-testid="button-bulk-delete"
+              >
+                <Trash2 className="w-3.5 h-3.5 mr-1.5" />
+                Eliminar
+              </Button>
+            </div>
+          )}
 
           {totalPages > 1 && (
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -1428,6 +1527,41 @@ export default function Certificates() {
                 </>
               ) : (
                 "Eliminar"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Bulk Delete Dialog */}
+      <AlertDialog open={bulkDeleteDialogOpen} onOpenChange={setBulkDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Eliminar {selectedCerts.size} certificados?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Está a punto de eliminar <strong>{selectedCerts.size}</strong> {selectedCerts.size === 1 ? "certificado" : "certificados"} de forma permanente.
+              <br /><br />
+              Esta acción no se puede deshacer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-bulk-delete">Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmBulkDelete}
+              disabled={bulkDeleteMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              data-testid="button-confirm-bulk-delete"
+            >
+              {bulkDeleteMutation.isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Eliminando...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="w-4 h-4 mr-2" />
+                  Eliminar {selectedCerts.size}
+                </>
               )}
             </AlertDialogAction>
           </AlertDialogFooter>

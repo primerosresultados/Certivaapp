@@ -1343,6 +1343,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Bulk delete certificates
+  app.post("/api/certificates/bulk-delete", isAuthenticated, requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { ids } = req.body;
+      if (!ids || !Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ message: "Se requiere un array de IDs" });
+      }
+
+      if (ids.length > 500) {
+        return res.status(400).json({ message: "Máximo 500 certificados a la vez" });
+      }
+
+      // Verify business access for non-superadmin users
+      if (!isSuperadmin(req.user!)) {
+        for (const id of ids) {
+          const cert = await storage.getCertificate(id);
+          if (cert && cert.businessId !== req.user!.businessId) {
+            return res.status(403).json({ message: "Acceso denegado a uno o más certificados" });
+          }
+        }
+      }
+
+      const deleted = await storage.deleteCertificates(ids);
+      res.json({ message: `${deleted} certificados eliminados`, deleted });
+    } catch (error) {
+      console.error("Error bulk deleting certificates:", error);
+      res.status(500).json({ message: "Error al eliminar los certificados" });
+    }
+  });
+
   app.get("/api/certificates/:id/qr", isAuthenticated, requireAnyRole, async (req: Request, res: Response) => {
     try {
       const { id } = req.params;

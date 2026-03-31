@@ -38,7 +38,7 @@ import {
   type InsertCertificateTemplate,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, ilike, or, sql, desc, and, count, gte, lte, lt } from "drizzle-orm";
+import { eq, ilike, or, sql, desc, and, count, gte, lte, lt, inArray } from "drizzle-orm";
 
 export interface IStorage {
   // Business operations
@@ -108,6 +108,8 @@ export interface IStorage {
   createCertificate(data: InsertCertificate & { certificateNumber: string; qrCode?: string; validationUrl?: string }): Promise<Certificate>;
   createCertificates(data: (InsertCertificate & { certificateNumber: string; qrCode?: string; validationUrl?: string; studentId?: string })[]): Promise<Certificate[]>;
   updateCertificate(id: string, data: Partial<Certificate>): Promise<Certificate | undefined>;
+  deleteCertificate(id: string): Promise<boolean>;
+  deleteCertificates(ids: string[]): Promise<number>;
 
   // Reports
   getCertificatesForExport(options: {
@@ -577,6 +579,12 @@ export class DatabaseStorage implements IStorage {
   async deleteCertificate(id: string): Promise<boolean> {
     const result = await db.delete(certificates).where(eq(certificates.id, id)).returning();
     return result.length > 0;
+  }
+
+  async deleteCertificates(ids: string[]): Promise<number> {
+    if (ids.length === 0) return 0;
+    const result = await db.delete(certificates).where(inArray(certificates.id, ids)).returning();
+    return result.length;
   }
 
   // Reports - Export certificates without pagination
