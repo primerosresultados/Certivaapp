@@ -2150,6 +2150,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const headers = jsonData[0] as string[];
       const dataRows = jsonData.slice(1).filter((row) => (row as unknown[]).some(cell => cell !== undefined && cell !== ""));
 
+      console.log("[IMPORT DEBUG] Headers:", headers);
+      console.log("[IMPORT DEBUG] Data rows count:", dataRows.length);
+      console.log("[IMPORT DEBUG] First data row:", dataRows[0]);
+      console.log("[IMPORT DEBUG] businessId:", businessId);
+
       // Create import batch
       const batch = await storage.createImportBatch({
         fileName: req.file.originalname,
@@ -2201,6 +2206,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           idx 
         });
       }
+
+      console.log("[IMPORT DEBUG] Column indices:", { nameIdx, rutIdx, dateIdx, emailIdx, phoneIdx, companyNameIdx, equipmentIdx, nomenclatureIdx });
+      console.log("[IMPORT DEBUG] Custom field indices:", customFieldIndices);
 
       const certificatesToCreate: Array<{
         certificateNumber: string;
