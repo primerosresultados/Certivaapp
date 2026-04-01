@@ -328,6 +328,7 @@ export const certificates = pgTable("certificates", {
   isActive: boolean("is_active").notNull().default(true),
   businessId: varchar("business_id").references(() => businesses.id),
   createdById: varchar("created_by_id").references(() => users.id),
+  importBatchId: varchar("import_batch_id"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 }, (table) => [
@@ -336,6 +337,7 @@ export const certificates = pgTable("certificates", {
   index("idx_certificates_type").on(table.certificateTypeId),
   index("idx_certificates_business").on(table.businessId),
   index("idx_certificates_student").on(table.studentId),
+  index("idx_certificates_batch").on(table.importBatchId),
 ]);
 
 export const certificatesRelations = relations(certificates, ({ one }) => ({
@@ -377,6 +379,7 @@ export type CertificateWithType = Certificate & {
 export const importBatches = pgTable("import_batches", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   fileName: varchar("file_name", { length: 255 }).notNull(),
+  importType: varchar("import_type", { length: 50 }).notNull().default("certificates"),
   totalRecords: integer("total_records").notNull().default(0),
   successfulRecords: integer("successful_records").notNull().default(0),
   failedRecords: integer("failed_records").notNull().default(0),

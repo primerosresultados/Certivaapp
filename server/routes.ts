@@ -2244,6 +2244,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         totalRecords: dataRows.length,
         importedById: userId,
         businessId: businessId || undefined,
+        importType: 'certificates',
       });
 
       // Find column indices - use exact header matching to avoid false positives
@@ -2307,6 +2308,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         equipment?: string;
         nomenclature?: string;
         customFieldValues?: Record<string, string>;
+        importBatchId?: string;
       }> = [];
       const errors: Array<{ row: number; errors: string[] }> = [];
 
@@ -2419,6 +2421,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           equipment: equipment || undefined,
           nomenclature: nomenclature || undefined,
           customFieldValues: Object.keys(customFieldValues).length > 0 ? customFieldValues : undefined,
+          importBatchId: batch.id,
         });
       }
 
@@ -2677,6 +2680,65 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (error) {
       console.error("Error fetching import history:", error);
       res.status(500).json({ message: "Failed to fetch import history" });
+    }
+  });
+
+  // ============= IMPORT BATCH CERTIFICATES =============
+
+  // Get certificates for a specific import batch
+  app.get("/api/import/:batchId/certificates", isAuthenticated, requireAnyRole, async (req: Request, res: Response) => {
+    try {
+      const { batchId } = req.params;
+      const certs = await storage.getCertificatesByBatchId(batchId);
+      res.json(certs);
+    } catch (error) {
+      console.error("Error fetching batch certificates:", error);
+      res.status(500).json({ message: "Error al obtener certificados del lote" });
+    }
+  });
+
+  // Download ZIP with all PDFs for a specific import batch
+  app.get("/api/import/:batchId/certificates/zip", isAuthenticated, requireAnyRole, async (req: Request, res: Response) => {
+    try {
+      const { batchId } = req.params;
+      const certsToExport = await storage.getCertificatesByBatchId(batchId);
+
+      if (certsToExport.length === 0) {
+        return res.status(404).json({ message: "No hay certificados en este lote" });
+      }
+
+      const zip = new JSZip();
+
+      for (const cert of certsToExport) {
+        try {
+          const port = process.env.PORT || 5000;
+          const pdfResponse = await fetch(`http://localhost:${port}/api/certificates/${cert.id}/pdf?template=clasico-dorado`, {
+            headers: {
+              'Authorization': req.headers.authorization || ''
+            }
+          });
+
+          if (pdfResponse.ok) {
+            const pdfBuffer = await pdfResponse.arrayBuffer();
+            const sanitizedRut = cert.studentRut.replace(/\./g, '').replace(/-/g, '');
+            const sanitizedName = cert.studentName.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ\s]/g, '').replace(/\s+/g, '_');
+            const sanitizedCourse = cert.certificateType?.name?.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ\s]/g, '').replace(/\s+/g, '_') || 'Certificado';
+            const fileName = `${sanitizedRut}_${sanitizedName}_${sanitizedCourse}.pdf`;
+            zip.file(fileName, pdfBuffer);
+          }
+        } catch (pdfError) {
+          console.error(`Error generating PDF for cert ${cert.id}:`, pdfError);
+        }
+      }
+
+      const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="Lote-${batchId.slice(0,8)}-${toDateString(new Date())}.zip"`);
+      res.send(zipBuffer);
+    } catch (error) {
+      console.error("Error generating batch ZIP:", error);
+      res.status(500).json({ message: "Error al generar ZIP del lote" });
     }
   });
 

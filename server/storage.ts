@@ -121,9 +121,10 @@ export interface IStorage {
   }): Promise<CertificateWithType[]>;
 
   // Import Batches
-  createImportBatch(data: { fileName: string; totalRecords: number; importedById: string; businessId?: string }): Promise<ImportBatch>;
+  createImportBatch(data: { fileName: string; totalRecords: number; importedById: string; businessId?: string; importType?: string }): Promise<ImportBatch>;
   updateImportBatch(id: string, data: Partial<ImportBatch>): Promise<ImportBatch | undefined>;
   getImportHistory(businessId?: string): Promise<ImportBatch[]>;
+  getCertificatesByBatchId(batchId: string): Promise<CertificateWithType[]>;
 
   // Dashboard
   getDashboardStats(businessId?: string): Promise<DashboardStats>;
@@ -663,7 +664,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Import Batches
-  async createImportBatch(data: { fileName: string; totalRecords: number; importedById: string; businessId?: string }): Promise<ImportBatch> {
+  async createImportBatch(data: { fileName: string; totalRecords: number; importedById: string; businessId?: string; importType?: string }): Promise<ImportBatch> {
     const [batch] = await db.insert(importBatches).values(data).returning();
     return batch;
   }
@@ -678,6 +679,20 @@ export class DatabaseStorage implements IStorage {
       return db.select().from(importBatches).where(eq(importBatches.businessId, businessId)).orderBy(desc(importBatches.createdAt));
     }
     return db.select().from(importBatches).orderBy(desc(importBatches.createdAt));
+  }
+
+  async getCertificatesByBatchId(batchId: string): Promise<CertificateWithType[]> {
+    const result = await db
+      .select()
+      .from(certificates)
+      .leftJoin(certificateTypes, eq(certificates.certificateTypeId, certificateTypes.id))
+      .where(eq(certificates.importBatchId, batchId))
+      .orderBy(desc(certificates.createdAt));
+
+    return result.map((r) => ({
+      ...r.certificates,
+      certificateType: r.certificate_types!,
+    }));
   }
 
   // Dashboard
