@@ -247,7 +247,7 @@ export default function Certificates() {
       studentName: "",
       studentRut: "",
       certificateTypeId: "",
-      issueDate: new Date().toISOString().split("T")[0],
+      issueDate: (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })(),
     },
   });
 
@@ -734,18 +734,19 @@ export default function Certificates() {
     const customFieldColumns = customFields.map(f => f.fieldLabel);
     const headers = [...baseColumns, ...customFieldColumns];
     
+    const todayStr = (() => { const d = new Date(); return `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}`; })();
     const exampleRow = [
       selectedImportTypeId || "",
       selectedType?.name || "",
       "Juan Pérez González",
       "12.345.678-9",
-      new Date().toLocaleDateString("es-CL"),
+      todayStr,
       "juan.perez@email.com",
       "+56912345678",
       "Mi Empresa S.A.",
       ...customFields.map(f => {
         if (f.fieldType === "number") return "0";
-        if (f.fieldType === "date") return new Date().toLocaleDateString("es-CL");
+        if (f.fieldType === "date") return todayStr;
         return "Ejemplo";
       })
     ];

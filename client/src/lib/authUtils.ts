@@ -46,7 +46,7 @@ export function validateRut(rut: string): boolean {
 }
 
 export function getCertificateStatus(expiryDate: string | Date): 'valid' | 'expired' | 'expiring_soon' {
-  const expiry = new Date(expiryDate);
+  const expiry = parseDateSafe(expiryDate);
   const now = new Date();
   const thirtyDaysFromNow = new Date();
   thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
@@ -56,8 +56,31 @@ export function getCertificateStatus(expiryDate: string | Date): 'valid' | 'expi
   return 'valid';
 }
 
+/**
+ * Parse a date string safely to avoid timezone shifts.
+ * Date-only strings like "2026-04-01" are parsed as UTC midnight by JS,
+ * which in negative-UTC timezones (like Chile, UTC-3) becomes the previous day.
+ * This helper appends T12:00:00 to date-only strings so the date never shifts.
+ */
+export function parseDateSafe(date: string | Date): Date {
+  if (date instanceof Date) return date;
+  if (typeof date === 'string') {
+    // YYYY-MM-DD (ISO format)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return new Date(date + 'T12:00:00');
+    }
+    // DD-MM-YYYY or DD/MM/YYYY (Chilean format)
+    const ddmmyyyy = date.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+    if (ddmmyyyy) {
+      const [, day, month, year] = ddmmyyyy;
+      return new Date(`${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T12:00:00`);
+    }
+  }
+  return new Date(date);
+}
+
 export function formatDate(date: string | Date): string {
-  return new Date(date).toLocaleDateString('es-CL', {
+  return parseDateSafe(date).toLocaleDateString('es-CL', {
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',

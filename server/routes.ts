@@ -59,6 +59,40 @@ function formatRut(rut: string): string {
   return `${formatted}-${verifier}`;
 }
 
+/**
+ * Parse a date string safely to avoid timezone shifts.
+ * Date-only strings like "2026-04-01" are parsed as UTC midnight by JS,
+ * which in negative-UTC timezones (like Chile, UTC-3) becomes the previous day.
+ * Appending T12:00:00 keeps the date stable across all timezones.
+ */
+function parseDateSafe(date: string | Date): Date {
+  if (date instanceof Date) return date;
+  if (typeof date === 'string') {
+    // YYYY-MM-DD (ISO format)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return new Date(date + 'T12:00:00');
+    }
+    // DD-MM-YYYY or DD/MM/YYYY (Chilean format)
+    const ddmmyyyy = date.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+    if (ddmmyyyy) {
+      const [, day, month, year] = ddmmyyyy;
+      return new Date(`${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T12:00:00`);
+    }
+  }
+  return new Date(date);
+}
+
+/**
+ * Convert a Date object to a YYYY-MM-DD string using local time (not UTC).
+ * This avoids the issue where toISOString() returns UTC which can shift the date.
+ */
+function toDateString(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 // Validation schemas
 const registerSchema = z.object({
   email: z.string().email("Email inválido"),
@@ -1461,10 +1495,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       // Calculate expiry date
-      const issueDateObj = new Date(issueDate);
+      const issueDateObj = parseDateSafe(issueDate);
       const expiryDate = new Date(issueDateObj);
       expiryDate.setMonth(expiryDate.getMonth() + certificateType.validityMonths);
-      const expiryDateStr = expiryDate.toISOString().split("T")[0];
+      const expiryDateStr = toDateString(expiryDate);
 
       // Generate certificate number
       const certificateNumber = generateCertificateNumber();
@@ -1680,8 +1714,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         format: 'a4'
       });
 
-      const issueDate = new Date(certificate.issueDate).toLocaleDateString('es-CL');
-      const expiryDate = new Date(certificate.expiryDate).toLocaleDateString('es-CL');
+      const issueDate = parseDateSafe(certificate.issueDate).toLocaleDateString('es-CL');
+      const expiryDate = parseDateSafe(certificate.expiryDate).toLocaleDateString('es-CL');
 
       // Helper function to add business logo as watermark in the background
       const addWatermark = () => {
@@ -2299,9 +2333,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             const date = XLSX.SSF.parse_date_code(rawDate);
             issueDate = `${date.y}-${String(date.m).padStart(2, "0")}-${String(date.d).padStart(2, "0")}`;
           } else {
-            const parsed = new Date(rawDate as string);
+            const parsed = parseDateSafe(rawDate as string);
             if (!isNaN(parsed.getTime())) {
-              issueDate = parsed.toISOString().split("T")[0];
+              issueDate = toDateString(parsed);
             }
           }
         }
@@ -2310,7 +2344,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (!studentRut) rowErrors.push("RUT requerido");
         else if (!validateRut(studentRut)) rowErrors.push("RUT inválido");
         if (!issueDate) {
-          issueDate = new Date().toISOString().split("T")[0];
+          issueDate = toDateString(new Date());
         }
 
         // Extract custom field values
@@ -2363,10 +2397,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         }
 
         // Calculate expiry date
-        const issueDateObj = new Date(issueDate);
+        const issueDateObj = parseDateSafe(issueDate);
         const expiryDate = new Date(issueDateObj);
         expiryDate.setMonth(expiryDate.getMonth() + certificateType.validityMonths);
-        const expiryDateStr = expiryDate.toISOString().split("T")[0];
+        const expiryDateStr = toDateString(expiryDate);
 
         const certificateNumber = generateCertificateNumber();
 
@@ -2792,14 +2826,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       // Format date helper
       const formatDate = (dateStr: string) => {
-        const date = new Date(dateStr);
+        const date = parseDateSafe(dateStr);
         return date.toLocaleDateString('es-CL');
       };
 
       // Get certificate status
       const getCertStatus = (expiryDate: string) => {
         const now = new Date();
-        const expiry = new Date(expiryDate);
+        const expiry = parseDateSafe(expiryDate);
         const thirtyDaysFromNow = new Date();
         thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
         

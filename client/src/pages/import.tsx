@@ -1,4 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -60,11 +62,37 @@ type PreviewData = {
   headers: string[];
 };
 
+// Optional fields that can be toggled for the template download
+type OptionalField = {
+  key: string;
+  label: string;
+  columnHeader: string;
+  example1: string;
+  example2: string;
+};
+
+const optionalFieldsConfig: Record<ImportType, OptionalField[]> = {
+  students: [
+    { key: "email", label: "Correo electrónico", columnHeader: "Email", example1: "juan@email.com", example2: "maria@email.com" },
+    { key: "telefono", label: "Teléfono", columnHeader: "Teléfono", example1: "+56 9 1234 5678", example2: "+56 9 8765 4321" },
+    { key: "empresa", label: "Empresa", columnHeader: "Empresa", example1: "Empresa ABC S.A.", example2: "Servicios XYZ Ltda." },
+  ],
+  companies: [],
+  certificates: [
+    { key: "email", label: "Correo electrónico", columnHeader: "Email", example1: "juan@email.com", example2: "maria@email.com" },
+    { key: "telefono", label: "Teléfono", columnHeader: "Teléfono", example1: "+56 9 1234 5678", example2: "+56 9 8765 4321" },
+    { key: "empresa", label: "Empresa", columnHeader: "Empresa", example1: "Empresa ABC S.A.", example2: "Servicios XYZ Ltda." },
+  ],
+};
+
 const importTypeConfig = {
   students: {
     title: "Alumnos",
     icon: GraduationCap,
     endpoint: "/api/import/students",
+    baseColumns: ["Nombre", "RUT"],
+    baseExample1: ["Juan Pérez González", "12345678-9"],
+    baseExample2: ["María López Silva", "98765432-1"],
     templateColumns: ["Nombre", "RUT", "Email", "Teléfono"],
     templateExample: [
       ["Nombre", "RUT", "Email", "Teléfono"],
@@ -77,12 +105,16 @@ const importTypeConfig = {
       rut: ["rut", "dni", "id"],
       email: ["email", "correo"],
       telefono: ["telefono", "teléfono", "phone"],
+      empresa: ["empresa", "company", "compañía"],
     },
   },
   companies: {
     title: "Empresas",
     icon: Building2,
     endpoint: "/api/import/companies",
+    baseColumns: ["Nombre", "RUT", "Dirección", "Contacto", "Email Contacto", "Teléfono Contacto"],
+    baseExample1: ["Empresa ABC S.A.", "76543210-K", "Av. Principal 123", "Pedro Soto", "pedro@abc.cl", "+56 2 1234 5678"],
+    baseExample2: ["Servicios XYZ Ltda.", "77654321-0", "Calle Central 456", "Ana García", "ana@xyz.cl", "+56 2 8765 4321"],
     templateColumns: ["Nombre", "RUT", "Dirección", "Contacto", "Email Contacto", "Teléfono Contacto"],
     templateExample: [
       ["Nombre", "RUT", "Dirección", "Contacto", "Email Contacto", "Teléfono Contacto"],
@@ -103,6 +135,9 @@ const importTypeConfig = {
     title: "Certificados",
     icon: Award,
     endpoint: "/api/import",
+    baseColumns: ["Nombre", "RUT", "Fecha"],
+    baseExample1: ["Juan Pérez González", "12345678-9", "2024-01-15"],
+    baseExample2: ["María López Silva", "98765432-1", "2024-01-15"],
     templateColumns: ["Nombre", "RUT", "Fecha"],
     templateExample: [
       ["Nombre", "RUT", "Fecha"],
@@ -114,6 +149,9 @@ const importTypeConfig = {
       nombre: ["nombre", "name"],
       rut: ["rut", "dni", "id"],
       fecha: ["fecha", "date"],
+      email: ["email", "correo"],
+      telefono: ["telefono", "teléfono", "phone"],
+      empresa: ["empresa", "company", "compañía"],
     },
   },
 };
@@ -129,6 +167,7 @@ export default function Import() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedTypeDetails, setSelectedTypeDetails] = useState<CertificateTypeWithDetails | null>(null);
+  const [optionalFields, setOptionalFields] = useState<Record<string, boolean>>({});
 
   // Load custom fields when certificate type is selected
   useEffect(() => {
@@ -294,7 +333,7 @@ export default function Import() {
       }
 
       if (type === "certificates" && !rowData.fecha) {
-        rowData.fecha = new Date().toISOString().split("T")[0];
+        const d = new Date(); rowData.fecha = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
       }
 
       return {
@@ -374,6 +413,16 @@ export default function Import() {
     setPreviewData(null);
     setSelectedTypeId("");
     setUploadProgress(0);
+    setOptionalFields({});
+  };
+
+  const toggleOptionalField = (key: string) => {
+    setOptionalFields(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const getActiveOptionalFields = (): OptionalField[] => {
+    const available = optionalFieldsConfig[activeTab] || [];
+    return available.filter(f => optionalFields[f.key]);
   };
 
   const handleTabChange = (newTab: string) => {
@@ -408,33 +457,37 @@ export default function Import() {
 
   const downloadTemplate = () => {
     const config = importTypeConfig[activeTab];
+    const activeOptional = getActiveOptionalFields();
     
-    // For certificates, include custom fields in template
+    // Build columns dynamically: base + optional + custom fields (for certificates)
+    const baseColumns = [...config.baseColumns];
+    const exampleRow1 = [...config.baseExample1];
+    const exampleRow2 = [...config.baseExample2];
+
+    // Add selected optional fields
+    for (const field of activeOptional) {
+      baseColumns.push(field.columnHeader);
+      exampleRow1.push(field.example1);
+      exampleRow2.push(field.example2);
+    }
+
+    // For certificates, also include custom fields
     if (activeTab === "certificates" && selectedTypeDetails?.customFields?.length) {
       const customFieldLabels = selectedTypeDetails.customFields.map(f => f.fieldLabel);
-      const baseColumns = ["Nombre", "RUT", "Fecha"];
-      const allColumns = [...baseColumns, ...customFieldLabels];
-      const exampleRow1 = ["Juan Pérez González", "12345678-9", "2024-01-15", ...customFieldLabels.map(() => "Valor ejemplo")];
-      const exampleRow2 = ["María López Silva", "98765432-1", "2024-01-15", ...customFieldLabels.map(() => "Valor ejemplo")];
-      const csvContent = [allColumns, exampleRow1, exampleRow2].map(row => row.join(",")).join("\n");
-      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `plantilla_${selectedTypeDetails.name.replace(/\s+/g, "_")}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
-      return;
+      baseColumns.push(...customFieldLabels);
+      exampleRow1.push(...customFieldLabels.map(() => "Valor ejemplo"));
+      exampleRow2.push(...customFieldLabels.map(() => "Valor ejemplo"));
     }
     
-    const csvContent = config.templateExample.map(row => row.join(",")).join("\n");
+    const csvContent = [baseColumns, exampleRow1, exampleRow2].map(row => row.join(",")).join("\n");
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `plantilla_${activeTab}.csv`;
+    const fileName = activeTab === "certificates" && selectedTypeDetails
+      ? `plantilla_${selectedTypeDetails.name.replace(/\s+/g, "_")}.csv`
+      : `plantilla_${activeTab}.csv`;
+    a.download = fileName;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -444,14 +497,18 @@ export default function Import() {
   const config = importTypeConfig[activeTab];
   const IconComponent = config.icon;
 
-  // Get expected columns including custom fields for certificates
+  // Get expected columns including optional + custom fields
   const getExpectedColumns = () => {
-    if (activeTab === "certificates" && selectedTypeDetails?.customFields?.length) {
-      const baseColumns = ["Nombre", "RUT", "Fecha"];
-      const customFieldLabels = selectedTypeDetails.customFields.map(f => f.fieldLabel);
-      return [...baseColumns, ...customFieldLabels];
+    const base = [...config.baseColumns];
+    const activeOptional = getActiveOptionalFields();
+    for (const field of activeOptional) {
+      base.push(field.columnHeader);
     }
-    return config.templateColumns;
+    if (activeTab === "certificates" && selectedTypeDetails?.customFields?.length) {
+      const customFieldLabels = selectedTypeDetails.customFields.map(f => f.fieldLabel);
+      base.push(...customFieldLabels);
+    }
+    return base;
   };
 
   const getDisplayHeaders = () => {
@@ -588,6 +645,32 @@ export default function Import() {
                         </Button>
                       </label>
                       <div className="mt-6 pt-6 border-t border-border">
+                        {/* Optional fields checkboxes */}
+                        {optionalFieldsConfig[activeTab]?.length > 0 && (
+                          <div className="mb-4">
+                            <p className="text-sm font-medium mb-3 text-muted-foreground">
+                              Seleccione los campos opcionales a incluir en la plantilla:
+                            </p>
+                            <div className="flex flex-wrap gap-4">
+                              {optionalFieldsConfig[activeTab].map((field) => (
+                                <div key={field.key} className="flex items-center gap-2">
+                                  <Checkbox
+                                    id={`opt-${field.key}`}
+                                    checked={!!optionalFields[field.key]}
+                                    onCheckedChange={() => toggleOptionalField(field.key)}
+                                    data-testid={`checkbox-opt-${field.key}`}
+                                  />
+                                  <Label
+                                    htmlFor={`opt-${field.key}`}
+                                    className="text-sm cursor-pointer select-none"
+                                  >
+                                    {field.label}
+                                  </Label>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                         <Button variant="ghost" onClick={downloadTemplate} className="gap-2" data-testid="button-download-template">
                           <Download className="w-4 h-4" />
                           Descargar plantilla de ejemplo
