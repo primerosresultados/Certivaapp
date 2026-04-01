@@ -199,10 +199,23 @@ export class DatabaseStorage implements IStorage {
 
   async deleteBusiness(id: string): Promise<boolean> {
     return db.transaction(async (tx) => {
-      await tx.delete(users).where(eq(users.businessId, id));
+      // Delete in order respecting foreign key constraints
+      // 1. Students (reference companies and businesses)
+      await tx.delete(students).where(eq(students.businessId, id));
+      // 2. Companies (reference businesses)
+      await tx.delete(companies).where(eq(companies.businessId, id));
+      // 3. Certificates (reference certificateTypes and businesses)
       await tx.delete(certificates).where(eq(certificates.businessId, id));
+      // 4. Certificate type related data (signers, logos, custom fields cascade via onDelete)
+      //    But we still need to delete certificateTypes which will cascade them
       await tx.delete(certificateTypes).where(eq(certificateTypes.businessId, id));
+      // 5. Import batches
       await tx.delete(importBatches).where(eq(importBatches.businessId, id));
+      // 6. Certificate templates
+      await tx.delete(certificateTemplates).where(eq(certificateTemplates.businessId, id));
+      // 7. Users
+      await tx.delete(users).where(eq(users.businessId, id));
+      // 8. Finally, the business itself
       const result = await tx.delete(businesses).where(eq(businesses.id, id)).returning();
       return result.length > 0;
     });

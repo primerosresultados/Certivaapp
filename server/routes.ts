@@ -570,9 +570,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       
       await storage.deleteBusiness(id);
       res.json({ message: "Business deleted successfully" });
-    } catch (error) {
-      console.error("Error deleting business:", error);
-      res.status(500).json({ message: "Failed to delete business" });
+    } catch (error: any) {
+      console.error("Error deleting business:", error?.message || error);
+      console.error("Stack:", error?.stack);
+      res.status(500).json({ message: error?.message || "Failed to delete business" });
     }
   });
 
