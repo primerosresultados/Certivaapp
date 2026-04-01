@@ -499,6 +499,11 @@ export default function Certificates() {
       if (statusFilter !== "all") params.append("status", statusFilter);
       if (typeFilter !== "all") params.append("type", typeFilter);
       
+      // If certificates are selected, send their IDs to download only those
+      if (selectedCerts.size > 0) {
+        params.append("ids", Array.from(selectedCerts).join(","));
+      }
+      
       const response = await fetch(`/api/certificates/download-zip?${params.toString()}`, {
         headers: {
           "Authorization": `Bearer ${token}`,
@@ -521,7 +526,9 @@ export default function Certificates() {
       
       toast({
         title: "Descarga completada",
-        description: "Los certificados se han descargado correctamente.",
+        description: selectedCerts.size > 0
+          ? `${selectedCerts.size} certificados descargados correctamente.`
+          : "Los certificados se han descargado correctamente.",
       });
     } catch (error) {
       toast({
@@ -1228,7 +1235,9 @@ export default function Certificates() {
             ) : (
               <FolderDown className="w-4 h-4" />
             )}
-            <span className="hidden sm:inline">Descargar ZIP</span>
+            <span className="hidden sm:inline">
+              {selectedCerts.size > 0 ? `ZIP (${selectedCerts.size})` : "Descargar ZIP"}
+            </span>
           </Button>
         </div>
       </div>
@@ -1344,6 +1353,21 @@ export default function Certificates() {
                 className="text-xs h-8"
               >
                 Deseleccionar
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={handleDownloadZip}
+                disabled={isDownloadingZip}
+                className="text-xs h-8"
+                data-testid="button-bulk-download-zip"
+              >
+                {isDownloadingZip ? (
+                  <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                ) : (
+                  <FolderDown className="w-3.5 h-3.5 mr-1.5" />
+                )}
+                ZIP
               </Button>
               <Button
                 size="sm"

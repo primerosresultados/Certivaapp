@@ -1231,7 +1231,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Download multiple certificates as ZIP (must be before :id route)
   app.get("/api/certificates/download-zip", isAuthenticated, requireAnyRole, async (req: Request, res: Response) => {
     try {
-      const { search, status, type } = req.query;
+      const { search, status, type, ids } = req.query;
       const businessId = getBusinessScope(req.user!);
       
       // Get filtered certificates (without pagination)
@@ -1244,14 +1244,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         perPage: 10000, // Get all matching certificates
       });
 
-      if (allCerts.certificates.length === 0) {
+      // If specific IDs are provided, filter to only those certificates
+      let certsToExport = allCerts.certificates;
+      if (ids && typeof ids === 'string') {
+        const selectedIds = new Set(ids.split(',').map(id => id.trim()));
+        certsToExport = allCerts.certificates.filter(cert => selectedIds.has(cert.id));
+      }
+
+      if (certsToExport.length === 0) {
         return res.status(404).json({ message: "No hay certificados para descargar" });
       }
 
       const zip = new JSZip();
       
       // Generate PDF for each certificate and add to ZIP
-      for (const cert of allCerts.certificates) {
+      for (const cert of certsToExport) {
         try {
           // Generate PDF for this certificate using localhost to avoid network issues
           const port = process.env.PORT || 5000;
