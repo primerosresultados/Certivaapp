@@ -216,6 +216,7 @@ const capitalize = (str: string) => str.charAt(0).toUpperCase() + str.slice(1);
 
 export default function Certificates() {
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [page, setPage] = useState(1);
@@ -288,7 +289,15 @@ export default function Certificates() {
   
   const selectedCreateTypeCustomFields: CustomField[] = selectedCreateTypeDetails?.customFields || [];
 
-  const certificatesQueryUrl = `/api/certificates?search=${encodeURIComponent(search)}&status=${statusFilter}&type=${typeFilter}&page=${page}&perPage=${perPage}`;
+  // Debounce search: only update the query after user stops typing for 400ms
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const certificatesQueryUrl = `/api/certificates?search=${encodeURIComponent(debouncedSearch)}&status=${statusFilter}&type=${typeFilter}&page=${page}&perPage=${perPage}`;
   
   const { data: response, isLoading } = useQuery<{
     certificates: CertificateWithType[];
