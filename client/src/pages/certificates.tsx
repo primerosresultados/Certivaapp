@@ -418,21 +418,29 @@ export default function Certificates() {
   const totalPages = Math.ceil(total / perPage);
 
   const toggleSelectAll = useCallback(() => {
-    if (selectedCerts.size === certificates.length) {
-      setSelectedCerts(new Set());
-    } else {
-      setSelectedCerts(new Set(certificates.map(c => c.id)));
-    }
-  }, [certificates, selectedCerts.size]);
+    const pageIds = certificates.map(c => c.id);
+    const allPageSelected = pageIds.length > 0 && pageIds.every(id => selectedCerts.has(id));
+    setSelectedCerts(prev => {
+      const next = new Set(prev);
+      if (allPageSelected) {
+        // Deselect only current page IDs
+        for (const id of pageIds) next.delete(id);
+      } else {
+        // Select all current page IDs (keeping other pages' selections)
+        for (const id of pageIds) next.add(id);
+      }
+      return next;
+    });
+  }, [certificates, selectedCerts]);
 
   const confirmBulkDelete = () => {
     bulkDeleteMutation.mutate(Array.from(selectedCerts));
   };
 
-  // Clear selection when page/filters change
+  // Clear selection when filters/search change (but NOT when page changes)
   useEffect(() => {
     setSelectedCerts(new Set());
-  }, [page, search, statusFilter, typeFilter]);
+  }, [debouncedSearch, statusFilter, typeFilter]);
 
   const handleCreateSubmit = async (data: CreateCertificateData) => {
     let companyId = selectedCompanyId === "none" ? undefined : selectedCompanyId;
@@ -1262,7 +1270,7 @@ export default function Certificates() {
                     <TableRow>
                       <TableHead className="w-10">
                         <Checkbox
-                          checked={certificates.length > 0 && selectedCerts.size === certificates.length}
+                          checked={certificates.length > 0 && certificates.every(c => selectedCerts.has(c.id))}
                           onCheckedChange={toggleSelectAll}
                           aria-label="Seleccionar todos"
                           data-testid="checkbox-select-all"

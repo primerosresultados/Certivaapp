@@ -1269,21 +1269,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { search, status, type, ids } = req.query;
       const businessId = getBusinessScope(req.user!);
       
-      // Get filtered certificates (without pagination)
-      const allCerts = await storage.getCertificates({
-        businessId,
-        search: search as string | undefined,
-        status: status as string | undefined,
-        type: type as string | undefined,
-        page: 1,
-        perPage: 10000, // Get all matching certificates
-      });
+      let certsToExport: Awaited<ReturnType<typeof storage.getCertificatesByIds>>;
 
-      // If specific IDs are provided, filter to only those certificates
-      let certsToExport = allCerts.certificates;
       if (ids && typeof ids === 'string') {
-        const selectedIds = new Set(ids.split(',').map(id => id.trim()));
-        certsToExport = allCerts.certificates.filter(cert => selectedIds.has(cert.id));
+        // When specific IDs are provided, fetch only those (respects businessId for authorization)
+        const selectedIds = ids.split(',').map(id => id.trim()).filter(Boolean);
+        certsToExport = await storage.getCertificatesByIds(selectedIds, businessId);
+      } else {
+        // No specific IDs — get all matching by filters (without pagination)
+        const allCerts = await storage.getCertificatesForExport({
+          businessId,
+          status: status as string | undefined,
+          type: type as string | undefined,
+        });
+        certsToExport = allCerts;
       }
 
       if (certsToExport.length === 0) {
@@ -1291,34 +1290,84 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       const zip = new JSZip();
+      const validationBaseUrl = `${req.protocol}://${req.get('host')}`;
+      
+      // Shared image cache for all PDFs in this batch — avoids re-fetching the same logos/signatures
+      const imageCache = new Map<string, string>();
+      
+      // Pre-cache shared data per certificate type to avoid redundant DB queries
+      const typeDataCache = new Map<string, {
+        signers: Awaited<ReturnType<typeof storage.getSignersByCertificateType>>;
+        logos: Awaited<ReturnType<typeof storage.getLogosByCertificateType>>;
+        customFields: any[];
+      }>();
       
       // Generate PDF for each certificate and add to ZIP
       for (const cert of certsToExport) {
         try {
-          // Generate PDF for this certificate using localhost to avoid network issues
-          const port = process.env.PORT || 5000;
-          const pdfResponse = await fetch(`http://localhost:${port}/api/certificates/${cert.id}/pdf?template=clasico-dorado`, {
-            headers: {
-              'Authorization': req.headers.authorization || ''
+          // Cache certificate type data
+          if (!typeDataCache.has(cert.certificateTypeId)) {
+            const [signers, logos, typeDetails] = await Promise.all([
+              storage.getSignersByCertificateType(cert.certificateTypeId),
+              storage.getLogosByCertificateType(cert.certificateTypeId),
+              storage.getCertificateTypeWithDetails(cert.certificateTypeId),
+            ]);
+            typeDataCache.set(cert.certificateTypeId, {
+              signers,
+              logos,
+              customFields: typeDetails?.customFields || [],
+            });
+          }
+          
+          const typeData = typeDataCache.get(cert.certificateTypeId)!;
+          
+          // Get business logo (cached)
+          let businessLogo: string | null = null;
+          let businessLogoData: { logoUrl: string | null } | null = null;
+          if (cert.businessId) {
+            const business = await storage.getBusiness(cert.businessId);
+            businessLogoData = business ? { logoUrl: business.logoUrl } : null;
+            if (business?.logoUrl) {
+              businessLogo = await fetchImageAsDataUrl(business.logoUrl, imageCache);
+              businessLogoData = { logoUrl: businessLogo };
             }
+          }
+          
+          // Clone signers/logos and resolve images with cache
+          const resolvedSigners = await Promise.all(typeData.signers.map(async (s) => ({
+            ...s,
+            signatureUrl: s.signatureUrl ? await fetchImageAsDataUrl(s.signatureUrl, imageCache) : s.signatureUrl,
+          })));
+          const resolvedLogos = await Promise.all(typeData.logos.map(async (l) => ({
+            ...l,
+            logoUrl: l.logoUrl ? await fetchImageAsDataUrl(l.logoUrl, imageCache) : l.logoUrl,
+          })));
+          
+          const pdfBuffer = await generateCertificatePdfBuffer({
+            certificate: cert,
+            signers: resolvedSigners,
+            logos: resolvedLogos,
+            businessLogo,
+            businessData: businessLogoData,
+            customFieldsDef: typeData.customFields,
+            footerText: cert.certificateType?.footerText || "",
+            templateKey: 'clasico-dorado',
+            validationBaseUrl,
           });
           
-          if (pdfResponse.ok) {
-            const pdfBuffer = await pdfResponse.arrayBuffer();
-            const sanitizedRut = cert.studentRut.replace(/\./g, '').replace(/-/g, '');
-            const sanitizedName = cert.studentName.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ\s]/g, '').replace(/\s+/g, '_');
-            const sanitizedCourse = cert.certificateType?.name?.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ\s]/g, '').replace(/\s+/g, '_') || 'Certificado';
-            const fileName = `${sanitizedRut}-${sanitizedName}-${sanitizedCourse}.pdf`;
-            zip.file(fileName, pdfBuffer);
-          } else {
-            console.error(`Error fetching PDF for certificate ${cert.id}: ${pdfResponse.status}`);
-          }
+          // Include certificateNumber in filename to prevent collisions
+          const sanitizedRut = cert.studentRut.replace(/\./g, '').replace(/-/g, '');
+          const sanitizedName = cert.studentName.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ\s]/g, '').replace(/\s+/g, '_');
+          const sanitizedCourse = cert.certificateType?.name?.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ\s]/g, '').replace(/\s+/g, '_') || 'Certificado';
+          const sanitizedNumber = cert.certificateNumber.replace(/[^a-zA-Z0-9-]/g, '');
+          const fileName = `${sanitizedNumber}-${sanitizedRut}-${sanitizedName}-${sanitizedCourse}.pdf`;
+          zip.file(fileName, pdfBuffer);
         } catch (e) {
           console.error(`Error generating PDF for certificate ${cert.id}:`, e);
         }
       }
 
-      const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+      const zipBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
       
       res.setHeader('Content-Type', 'application/zip');
       res.setHeader('Content-Disposition', `attachment; filename="Certificados-${new Date().toISOString().split('T')[0]}.zip"`);
@@ -1629,11 +1678,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // Image cache for batch PDF generation (shared across certificates in a single request)
+  const globalImageCache = new Map<string, string>();
+
+  // Helper: Detect jsPDF-compatible image format from data URL
+  function getImageFormat(dataUrl: string): 'JPEG' | 'PNG' {
+    if (dataUrl.startsWith('data:image/jpeg') || dataUrl.startsWith('data:image/jpg')) {
+      return 'JPEG';
+    }
+    return 'PNG';
+  }
+
   // Helper: Convert image URL (Supabase or base64 data URL) to base64 data URL for jsPDF
-  async function fetchImageAsDataUrl(url: string): Promise<string> {
+  async function fetchImageAsDataUrl(url: string, cache?: Map<string, string>): Promise<string> {
     // If it's already a base64 data URL, return as-is
     if (url.startsWith("data:")) {
       return url;
+    }
+    // Check cache first
+    if (cache?.has(url)) {
+      return cache.get(url)!;
     }
     // Fetch remote URL and convert to base64
     try {
@@ -1641,13 +1705,450 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const buffer = Buffer.from(await response.arrayBuffer());
       const contentType = response.headers.get("content-type") || "image/png";
-      return `data:${contentType};base64,${buffer.toString("base64")}`;
+      const dataUrl = `data:${contentType};base64,${buffer.toString("base64")}`;
+      cache?.set(url, dataUrl);
+      return dataUrl;
     } catch (e) {
       console.error("Error fetching image for PDF:", url, e);
       return url; // Return original, jsPDF will handle the error
     }
   }
 
+  // ============= REUSABLE PDF GENERATION HELPER =============
+  interface GeneratePdfOptions {
+    certificate: any;
+    signers: any[];
+    logos: any[];
+    businessLogo: string | null;
+    businessData: { logoUrl: string | null } | null;
+    customFieldsDef: any[];
+    footerText: string;
+    templateKey: string;
+    validationBaseUrl: string;
+  }
+
+  async function generateCertificatePdfBuffer(opts: GeneratePdfOptions): Promise<Buffer> {
+    const {
+      certificate, signers, logos, businessLogo, businessData,
+      customFieldsDef, footerText, templateKey, validationBaseUrl,
+    } = opts;
+
+    // Get template configuration
+    let templateConfig = templateDesigns['moderno-azul']; // Default
+    if (templateKey && templateDesigns[templateKey]) {
+      templateConfig = templateDesigns[templateKey];
+    }
+
+    const primaryRgb = hexToRgb(templateConfig.primaryColor);
+    const secondaryRgb = hexToRgb(templateConfig.secondaryColor);
+    const accentRgb = hexToRgb(templateConfig.accentColor);
+
+    const doc = new jsPDF({
+      orientation: 'landscape',
+      unit: 'mm',
+      format: 'a4',
+      compress: true,
+    });
+
+    const issueDate = parseDateSafe(certificate.issueDate).toLocaleDateString('es-CL');
+    const expiryDate = parseDateSafe(certificate.expiryDate).toLocaleDateString('es-CL');
+
+    // Helper function to add business logo as watermark in the background
+    const addWatermark = () => {
+      if (!businessLogo) return;
+      try {
+        const pageWidth = 297;
+        const watermarkWidth = pageWidth - 40;
+        const x = 20;
+        const y = 20;
+        doc.saveGraphicsState();
+        doc.setGState(doc.GState({ opacity: 0.08 }));
+        const fmt = getImageFormat(businessLogo);
+        doc.addImage(businessLogo, fmt, x, y, watermarkWidth, 0);
+        doc.restoreGraphicsState();
+      } catch (e) {
+        console.error("Error adding watermark:", e);
+      }
+    };
+
+    // Helper function to add logos at the top maintaining aspect ratio
+    const addLogos = (startY: number) => {
+      const otherLogoHeight = 20;
+      const spacing = 12;
+      
+      // Business logo on the right side (larger, more prominent)
+      const bizLogoUrl = businessData?.logoUrl || null;
+      if (bizLogoUrl) {
+        try {
+          const maxLogoWidth = 55;
+          const rightMargin = 15;
+          const rightX = 297 - rightMargin - maxLogoWidth;
+          const fmt = getImageFormat(bizLogoUrl);
+          doc.addImage(bizLogoUrl, fmt, rightX, startY, maxLogoWidth, 0);
+        } catch (e) {
+          console.error("Error adding business logo:", e);
+        }
+      }
+      
+      // Other logos on the left side (without titles)
+      const otherLogos = logos.filter((logo: any) => logo.logoUrl);
+      if (otherLogos.length > 0) {
+        let leftX = 15;
+        const estimatedLogoWidth = otherLogoHeight * 1.5;
+        
+        for (const logo of otherLogos) {
+          if (logo.logoUrl) {
+            try {
+              const fmt = getImageFormat(logo.logoUrl);
+              doc.addImage(logo.logoUrl, fmt, leftX, startY, 0, otherLogoHeight);
+              leftX += estimatedLogoWidth + spacing;
+            } catch (e) {
+              console.error("Error adding logo image:", e);
+              leftX += 30 + spacing;
+            }
+          }
+        }
+      }
+    };
+
+    // Helper function to add signers at the bottom
+    const addSigners = (baseY: number) => {
+      if (signers.length === 0) return;
+      const signerWidth = 60;
+      const spacing = 20;
+      const totalWidth = signers.length * signerWidth + (signers.length - 1) * spacing;
+      let startX = (297 - totalWidth) / 2;
+      
+      for (const signer of signers) {
+        if (signer.signatureUrl) {
+          try {
+            const fmt = getImageFormat(signer.signatureUrl);
+            doc.addImage(signer.signatureUrl, fmt, startX + 10, baseY - 15, 40, 12);
+          } catch (e) {
+            console.error("Error adding signature image:", e);
+          }
+        }
+        
+        doc.setDrawColor(100, 100, 100);
+        doc.setLineWidth(0.3);
+        doc.line(startX, baseY, startX + signerWidth, baseY);
+        
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(50, 50, 50);
+        doc.text(signer.name, startX + signerWidth / 2, baseY + 5, { align: 'center' });
+        
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(100, 100, 100);
+        doc.text(signer.position, startX + signerWidth / 2, baseY + 10, { align: 'center' });
+        
+        startX += signerWidth + spacing;
+      }
+    };
+
+    // Helper function to add equipment/nomenclature info
+    const addEquipmentInfo = (y: number) => {
+      let currentY = y;
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(60, 60, 60);
+      
+      if (certificate.equipment) {
+        doc.text(`Equipo/Maquinaria: ${certificate.equipment}`, 148.5, currentY, { align: 'center' });
+        currentY += 6;
+      }
+      if (certificate.nomenclature) {
+        doc.text(`Nomenclatura: ${certificate.nomenclature}`, 148.5, currentY, { align: 'center' });
+        currentY += 6;
+      }
+      return currentY;
+    };
+
+    // Helper function to add custom fields info
+    const addCustomFields = (y: number) => {
+      let currentY = y;
+      
+      if (!customFieldsDef || !Array.isArray(customFieldsDef) || customFieldsDef.length === 0) {
+        return currentY;
+      }
+      
+      let customFieldValues: Record<string, string> = {};
+      if (certificate.customFieldValues) {
+        if (typeof certificate.customFieldValues === 'string') {
+          try {
+            const parsed = JSON.parse(certificate.customFieldValues);
+            customFieldValues = typeof parsed === 'object' && parsed !== null ? parsed : {};
+          } catch (e) {
+            customFieldValues = {};
+          }
+        } else if (typeof certificate.customFieldValues === 'object') {
+          customFieldValues = certificate.customFieldValues as Record<string, string>;
+        }
+      }
+      
+      if (Object.keys(customFieldValues).length === 0) {
+        return currentY;
+      }
+      
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(50, 50, 50);
+      
+      for (const field of customFieldsDef) {
+        if (!field || !field.fieldName) continue;
+        const value = customFieldValues[field.fieldName];
+        if (value) {
+          const label = field.fieldLabel || field.fieldName;
+          const labelLower = label.toLowerCase();
+          const isDurationField = labelLower.includes('duración') || labelLower.includes('duracion') || 
+                                  labelLower.includes('vigencia') || labelLower.includes('validez');
+          const displayValue = isDurationField && /^\d+$/.test(value.trim()) ? `${value} meses` : value;
+          const displayText = `${label}: ${displayValue}`;
+          const truncatedText = displayText.length > 80 ? displayText.substring(0, 77) + '...' : displayText;
+          doc.text(truncatedText, 148.5, currentY, { align: 'center' });
+          currentY += 7;
+        }
+      }
+      return currentY;
+    };
+
+    // Helper function to add footer text at the bottom of the certificate
+    const addFooter = () => {
+      if (!footerText || footerText.trim() === "") return;
+      
+      const footerY = 195;
+      const footerHeight = 12;
+      const footerX = 10;
+      const footerWidth = 277;
+      
+      doc.setFillColor(210, 160, 80);
+      doc.rect(footerX, footerY, footerWidth, footerHeight, 'F');
+      
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      
+      const maxWidth = footerWidth - 10;
+      const lines = doc.splitTextToSize(footerText, maxWidth);
+      const lineHeight = 3.5;
+      
+      const totalTextHeight = lines.length * lineHeight;
+      let textY = footerY + (footerHeight - totalTextHeight) / 2 + 2.5;
+      
+      for (const line of lines.slice(0, 3)) {
+        doc.text(line, 148.5, textY, { align: 'center' });
+        textY += lineHeight;
+      }
+    };
+
+    if (templateConfig.style === 'modern') {
+      doc.setFillColor(248, 250, 252);
+      doc.rect(0, 0, 297, 210, 'F');
+      addWatermark();
+      addLogos(12);
+
+      doc.setFillColor(primaryRgb.r, primaryRgb.g, primaryRgb.b);
+      doc.rect(0, 28, 297, 20, 'F');
+
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(24);
+      doc.setFont('helvetica', 'bold');
+      doc.text('CERTIFICADO DE CAPACITACIÓN', 148.5, 41, { align: 'center' });
+
+      doc.setTextColor(secondaryRgb.r, secondaryRgb.g, secondaryRgb.b);
+      doc.setFontSize(16);
+      doc.setFont('helvetica', 'bold');
+      doc.text(certificate.certificateType.name.toUpperCase(), 148.5, 58, { align: 'center' });
+
+      doc.setTextColor(71, 85, 105);
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.text('Se certifica que:', 148.5, 70, { align: 'center' });
+
+      doc.setTextColor(30, 41, 59);
+      doc.setFontSize(22);
+      doc.setFont('helvetica', 'bold');
+      doc.text(certificate.studentName.toUpperCase(), 148.5, 82, { align: 'center' });
+
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(50, 60, 70);
+      doc.text(`RUT: ${formatRut(certificate.studentRut)}`, 148.5, 93, { align: 'center' });
+
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(71, 85, 105);
+      doc.text('Ha completado satisfactoriamente el programa de capacitación', 148.5, 104, { align: 'center' });
+
+      let infoY = addEquipmentInfo(114);
+      infoY = addCustomFields(infoY);
+
+      doc.setFontSize(9);
+      doc.setTextColor(71, 85, 105);
+      doc.text(`Fecha de Emisión: ${issueDate}`, 20, 150);
+      doc.text(`Válido Hasta: ${expiryDate}`, 20, 157);
+      doc.text(`N° Certificado: ${certificate.certificateNumber}`, 20, 164);
+
+      addSigners(168);
+      addFooter();
+
+    } else if (templateConfig.style === 'classic') {
+      doc.setFillColor(255, 253, 245);
+      doc.rect(0, 0, 297, 210, 'F');
+      addWatermark();
+      addLogos(10);
+
+      doc.setTextColor(primaryRgb.r, primaryRgb.g, primaryRgb.b);
+      doc.setFontSize(36);
+      doc.setFont('helvetica', 'bold');
+      doc.text('CERTIFICADO', 148.5, 38, { align: 'center' });
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'normal');
+      doc.text('de Capacitación Profesional', 148.5, 45, { align: 'center' });
+
+      doc.setTextColor(secondaryRgb.r, secondaryRgb.g, secondaryRgb.b);
+      doc.setFontSize(16);
+      doc.setFont('helvetica', 'bold');
+      doc.text(certificate.certificateType.name.toUpperCase(), 148.5, 58, { align: 'center' });
+
+      doc.setTextColor(60, 60, 60);
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.text('Por medio de la presente se certifica que:', 148.5, 68, { align: 'center' });
+
+      doc.setTextColor(30, 30, 30);
+      doc.setFontSize(20);
+      doc.setFont('helvetica', 'bold');
+      doc.text(certificate.studentName.toUpperCase(), 148.5, 80, { align: 'center' });
+
+      doc.setFontSize(13);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(50, 50, 50);
+      doc.text(`RUT: ${formatRut(certificate.studentRut)}`, 148.5, 91, { align: 'center' });
+
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(60, 60, 60);
+      doc.text('Ha completado satisfactoriamente el programa de capacitación', 148.5, 102, { align: 'center' });
+
+      let classicInfoY = addEquipmentInfo(112);
+      classicInfoY = addCustomFields(classicInfoY);
+
+      doc.setFontSize(9);
+      doc.text(`Fecha de Emisión: ${issueDate}`, 20, 150);
+      doc.text(`Válido Hasta: ${expiryDate}`, 20, 157);
+      doc.text(`N° Certificado: ${certificate.certificateNumber}`, 20, 164);
+
+      addSigners(168);
+      addFooter();
+
+    } else if (templateConfig.style === 'minimal') {
+      doc.setFillColor(255, 255, 255);
+      doc.rect(0, 0, 297, 210, 'F');
+      addWatermark();
+      addLogos(10);
+
+      doc.setTextColor(primaryRgb.r, primaryRgb.g, primaryRgb.b);
+      doc.setFontSize(36);
+      doc.setFont('helvetica', 'bold');
+      doc.text('CERTIFICADO', 148.5, 38, { align: 'center' });
+
+      doc.setTextColor(100, 100, 100);
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'normal');
+      doc.text(certificate.certificateType.name, 148.5, 48, { align: 'center' });
+
+      doc.setTextColor(60, 60, 60);
+      doc.setFontSize(10);
+      doc.text('Se certifica que', 148.5, 58, { align: 'center' });
+
+      doc.setTextColor(30, 30, 30);
+      doc.setFontSize(20);
+      doc.setFont('helvetica', 'bold');
+      doc.text(certificate.studentName, 148.5, 72, { align: 'center' });
+
+      doc.setFontSize(13);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(60, 60, 60);
+      doc.text(`RUT: ${formatRut(certificate.studentRut)}`, 148.5, 83, { align: 'center' });
+
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(80, 80, 80);
+      doc.text('ha completado satisfactoriamente el programa de capacitación', 148.5, 94, { align: 'center' });
+
+      let minimalInfoY = addEquipmentInfo(104);
+      minimalInfoY = addCustomFields(minimalInfoY);
+
+      doc.setFontSize(8);
+      doc.setTextColor(120, 120, 120);
+      doc.text(`Emisión: ${issueDate}  |  Vencimiento: ${expiryDate}  |  N°: ${certificate.certificateNumber}`, 148.5, 135, { align: 'center' });
+
+      addSigners(155);
+      addFooter();
+
+    } else if (templateConfig.style === 'elegant') {
+      doc.setFillColor(250, 250, 255);
+      doc.rect(0, 0, 297, 210, 'F');
+      addWatermark();
+      addLogos(10);
+
+      doc.setTextColor(primaryRgb.r, primaryRgb.g, primaryRgb.b);
+      doc.setFontSize(36);
+      doc.setFont('helvetica', 'bold');
+      doc.text('CERTIFICADO', 148.5, 38, { align: 'center' });
+
+      doc.setTextColor(secondaryRgb.r, secondaryRgb.g, secondaryRgb.b);
+      doc.setFontSize(16);
+      doc.setFont('helvetica', 'bold');
+      doc.text(certificate.certificateType.name.toUpperCase(), 148.5, 50, { align: 'center' });
+
+      doc.setTextColor(80, 80, 80);
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.text('Se certifica que:', 148.5, 62, { align: 'center' });
+
+      doc.setTextColor(30, 30, 30);
+      doc.setFontSize(22);
+      doc.setFont('helvetica', 'bold');
+      doc.text(certificate.studentName.toUpperCase(), 148.5, 74, { align: 'center' });
+
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(50, 60, 70);
+      doc.text(`RUT: ${formatRut(certificate.studentRut)}`, 148.5, 85, { align: 'center' });
+
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(80, 80, 80);
+      doc.text('Ha completado satisfactoriamente el programa de capacitación', 148.5, 96, { align: 'center' });
+
+      let elegantInfoY = addEquipmentInfo(106);
+      elegantInfoY = addCustomFields(elegantInfoY);
+
+      doc.setFontSize(9);
+      doc.text(`Fecha de Emisión: ${issueDate}`, 20, 150);
+      doc.text(`Válido Hasta: ${expiryDate}`, 20, 157);
+      doc.text(`N° Certificado: ${certificate.certificateNumber}`, 20, 164);
+
+      addSigners(168);
+      addFooter();
+    }
+
+    // QR Code (common to all styles) - positioned more to the right and lower
+    const validationUrl = `${validationBaseUrl}/validate/${certificate.id}`;
+    const qrDataUrl = await QRCode.toDataURL(validationUrl, { width: 200, margin: 1 });
+    doc.addImage(qrDataUrl, 'PNG', 250, 150, 35, 35);
+
+    doc.setFontSize(7);
+    doc.setTextColor(100, 100, 100);
+    doc.text('Escanee para validar', 267.5, 188, { align: 'center' });
+
+    return Buffer.from(doc.output('arraybuffer'));
+  }
+
+  // ============= PDF ENDPOINT =============
   app.get("/api/certificates/:id/pdf", isAuthenticated, requireAnyRole, async (req: Request, res: Response) => {
     try {
       console.log("PDF generation started for certificate:", req.params.id);
@@ -1699,477 +2200,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const customFieldsDef = certificateTypeWithDetails?.customFields || [];
       const footerText = certificate.certificateType?.footerText || "";
 
-      // Get template configuration
-      let templateConfig = templateDesigns['moderno-azul']; // Default
-      if (template && typeof template === 'string' && templateDesigns[template]) {
-        templateConfig = templateDesigns[template];
-      }
+      const templateKey = (template && typeof template === 'string') ? template : 'moderno-azul';
+      const validationBaseUrl = `${req.protocol}://${req.get('host')}`;
 
-      const primaryRgb = hexToRgb(templateConfig.primaryColor);
-      const secondaryRgb = hexToRgb(templateConfig.secondaryColor);
-      const accentRgb = hexToRgb(templateConfig.accentColor);
-
-      const doc = new jsPDF({
-        orientation: 'landscape',
-        unit: 'mm',
-        format: 'a4'
+      const pdfBuffer = await generateCertificatePdfBuffer({
+        certificate,
+        signers,
+        logos,
+        businessLogo,
+        businessData,
+        customFieldsDef,
+        footerText,
+        templateKey,
+        validationBaseUrl,
       });
-
-      const issueDate = parseDateSafe(certificate.issueDate).toLocaleDateString('es-CL');
-      const expiryDate = parseDateSafe(certificate.expiryDate).toLocaleDateString('es-CL');
-
-      // Helper function to add business logo as watermark in the background
-      const addWatermark = () => {
-        if (!businessLogo) return;
-        try {
-          // Add logo as full-page centered watermark with low opacity
-          const pageWidth = 297;
-          const pageHeight = 210;
-          
-          // Make watermark cover the full page width (centered)
-          // Use width-based sizing to ensure it fits within the page
-          const watermarkWidth = pageWidth - 40; // Full width minus margins (257mm)
-          
-          // Center horizontally and vertically
-          const x = 20; // Left margin
-          const y = 20; // Top margin to center vertically
-          
-          // Save current state
-          doc.saveGraphicsState();
-          
-          // Set low opacity for watermark effect (0.08 = 8% opacity)
-          doc.setGState(doc.GState({ opacity: 0.08 }));
-          
-          // Add the watermark image with fixed width and 0 height to maintain proportions
-          doc.addImage(businessLogo, 'PNG', x, y, watermarkWidth, 0);
-          
-          // Restore graphics state
-          doc.restoreGraphicsState();
-        } catch (e) {
-          console.error("Error adding watermark:", e);
-        }
-      };
-
-      // Helper function to add logos at the top maintaining aspect ratio
-      const addLogos = (startY: number) => {
-        const businessLogoHeight = 28; // Larger height for business logo (protagonist)
-        const otherLogoHeight = 20; // Height for other logos
-        const spacing = 12;
-        
-        // Business logo on the right side (larger, more prominent)
-        const bizLogoUrl = businessData?.logoUrl || null;
-        if (bizLogoUrl) {
-          try {
-            // Use fixed width approach to ensure logo stays within margins
-            // Max width for business logo (keeping 15mm margin from right edge)
-            const maxLogoWidth = 55; // Maximum width in mm (increased for more prominence)
-            const rightMargin = 15;
-            // Position from right edge: page width (297) - margin - width
-            const rightX = 297 - rightMargin - maxLogoWidth;
-            // Add image with fixed width, height=0 maintains aspect ratio
-            doc.addImage(bizLogoUrl, 'PNG', rightX, startY, maxLogoWidth, 0);
-          } catch (e) {
-            console.error("Error adding business logo:", e);
-          }
-        }
-        
-        // Other logos on the left side (without titles)
-        const otherLogos = logos.filter(logo => logo.logoUrl);
-        if (otherLogos.length > 0) {
-          let leftX = 15; // Start from left margin
-          const estimatedLogoWidth = otherLogoHeight * 1.5; // Estimate width based on height (aspect ratio ~1.5)
-          
-          for (const logo of otherLogos) {
-            if (logo.logoUrl) {
-              try {
-                // Add logo image only (no name below)
-                doc.addImage(logo.logoUrl, 'PNG', leftX, startY, 0, otherLogoHeight);
-                leftX += estimatedLogoWidth + spacing; // Move right for next logo
-              } catch (e) {
-                console.error("Error adding logo image:", e);
-                leftX += 30 + spacing;
-              }
-            }
-          }
-        }
-      };
-
-      // Helper function to add signers at the bottom (synchronous - images are data URLs)
-      const addSigners = (baseY: number) => {
-        if (signers.length === 0) return;
-        const signerWidth = 60;
-        const spacing = 20;
-        const totalWidth = signers.length * signerWidth + (signers.length - 1) * spacing;
-        let startX = (297 - totalWidth) / 2;
-        
-        for (const signer of signers) {
-          // Add signature image if available
-          if (signer.signatureUrl) {
-            try {
-              doc.addImage(signer.signatureUrl, 'PNG', startX + 10, baseY - 15, 40, 12);
-            } catch (e) {
-              console.error("Error adding signature image:", e);
-            }
-          }
-          
-          // Add signature line
-          doc.setDrawColor(100, 100, 100);
-          doc.setLineWidth(0.3);
-          doc.line(startX, baseY, startX + signerWidth, baseY);
-          
-          // Add signer name
-          doc.setFontSize(9);
-          doc.setFont('helvetica', 'bold');
-          doc.setTextColor(50, 50, 50);
-          doc.text(signer.name, startX + signerWidth / 2, baseY + 5, { align: 'center' });
-          
-          // Add signer position
-          doc.setFontSize(8);
-          doc.setFont('helvetica', 'normal');
-          doc.setTextColor(100, 100, 100);
-          doc.text(signer.position, startX + signerWidth / 2, baseY + 10, { align: 'center' });
-          
-          startX += signerWidth + spacing;
-        }
-      };
-
-      // Helper function to add equipment/nomenclature info
-      const addEquipmentInfo = (y: number) => {
-        let currentY = y;
-        doc.setFontSize(10);
-        doc.setFont('helvetica', 'normal');
-        doc.setTextColor(60, 60, 60);
-        
-        if (certificate.equipment) {
-          doc.text(`Equipo/Maquinaria: ${certificate.equipment}`, 148.5, currentY, { align: 'center' });
-          currentY += 6;
-        }
-        if (certificate.nomenclature) {
-          doc.text(`Nomenclatura: ${certificate.nomenclature}`, 148.5, currentY, { align: 'center' });
-          currentY += 6;
-        }
-        return currentY;
-      };
-
-      // Helper function to add custom fields info
-      const addCustomFields = (y: number) => {
-        let currentY = y;
-        
-        // Guard against missing custom fields definition
-        if (!customFieldsDef || !Array.isArray(customFieldsDef) || customFieldsDef.length === 0) {
-          return currentY;
-        }
-        
-        // Parse customFieldValues if it's a JSON string, default to empty object
-        let customFieldValues: Record<string, string> = {};
-        if (certificate.customFieldValues) {
-          if (typeof certificate.customFieldValues === 'string') {
-            try {
-              const parsed = JSON.parse(certificate.customFieldValues);
-              customFieldValues = typeof parsed === 'object' && parsed !== null ? parsed : {};
-            } catch (e) {
-              console.warn("Error parsing customFieldValues for certificate:", certificate.id, e);
-              customFieldValues = {};
-            }
-          } else if (typeof certificate.customFieldValues === 'object') {
-            customFieldValues = certificate.customFieldValues as Record<string, string>;
-          }
-        }
-        
-        // Check if there are any values to display
-        if (Object.keys(customFieldValues).length === 0) {
-          return currentY;
-        }
-        
-        doc.setFontSize(12);
-        doc.setFont('helvetica', 'bold');
-        doc.setTextColor(50, 50, 50);
-        
-        for (const field of customFieldsDef) {
-          if (!field || !field.fieldName) continue;
-          const value = customFieldValues[field.fieldName];
-          if (value) {
-            const label = field.fieldLabel || field.fieldName;
-            // Add "meses" suffix for duration fields
-            const labelLower = label.toLowerCase();
-            const isDurationField = labelLower.includes('duración') || labelLower.includes('duracion') || 
-                                    labelLower.includes('vigencia') || labelLower.includes('validez');
-            const displayValue = isDurationField && /^\d+$/.test(value.trim()) ? `${value} meses` : value;
-            const displayText = `${label}: ${displayValue}`;
-            const truncatedText = displayText.length > 80 ? displayText.substring(0, 77) + '...' : displayText;
-            doc.text(truncatedText, 148.5, currentY, { align: 'center' });
-            currentY += 7;
-          }
-        }
-        return currentY;
-      };
-
-      // Helper function to add footer text at the bottom of the certificate
-      const addFooter = () => {
-        if (!footerText || footerText.trim() === "") return;
-        
-        // Footer area - ochre/brown colored bar at the bottom
-        const footerY = 195; // Position at bottom
-        const footerHeight = 12;
-        const footerX = 10;
-        const footerWidth = 277;
-        
-        // Draw footer background (ochre/brown color similar to example)
-        doc.setFillColor(210, 160, 80); // Ochre/golden brown
-        doc.rect(footerX, footerY, footerWidth, footerHeight, 'F');
-        
-        // Add footer text - white text on colored background
-        doc.setTextColor(255, 255, 255);
-        doc.setFontSize(8);
-        doc.setFont('helvetica', 'normal');
-        
-        // Split text into lines if too long
-        const maxWidth = footerWidth - 10;
-        const lines = doc.splitTextToSize(footerText, maxWidth);
-        const lineHeight = 3.5;
-        
-        // Center text vertically in footer
-        const totalTextHeight = lines.length * lineHeight;
-        let textY = footerY + (footerHeight - totalTextHeight) / 2 + 2.5;
-        
-        for (const line of lines.slice(0, 3)) { // Max 3 lines
-          doc.text(line, 148.5, textY, { align: 'center' });
-          textY += lineHeight;
-        }
-      };
-
-      if (templateConfig.style === 'modern') {
-        // Modern style - clean layout without borders
-        doc.setFillColor(248, 250, 252);
-        doc.rect(0, 0, 297, 210, 'F');
-
-        // Add watermark before other elements
-        addWatermark();
-
-        // Add logos at top
-        addLogos(12);
-
-        doc.setFillColor(primaryRgb.r, primaryRgb.g, primaryRgb.b);
-        doc.rect(0, 28, 297, 20, 'F');
-
-        doc.setTextColor(255, 255, 255);
-        doc.setFontSize(24);
-        doc.setFont('helvetica', 'bold');
-        doc.text('CERTIFICADO DE CAPACITACIÓN', 148.5, 41, { align: 'center' });
-
-        doc.setTextColor(secondaryRgb.r, secondaryRgb.g, secondaryRgb.b);
-        doc.setFontSize(16);
-        doc.setFont('helvetica', 'bold');
-        doc.text(certificate.certificateType.name.toUpperCase(), 148.5, 58, { align: 'center' });
-
-        doc.setTextColor(71, 85, 105);
-        doc.setFontSize(10);
-        doc.setFont('helvetica', 'normal');
-        doc.text('Se certifica que:', 148.5, 70, { align: 'center' });
-
-        doc.setTextColor(30, 41, 59);
-        doc.setFontSize(22);
-        doc.setFont('helvetica', 'bold');
-        doc.text(certificate.studentName.toUpperCase(), 148.5, 82, { align: 'center' });
-
-        doc.setFontSize(14);
-        doc.setFont('helvetica', 'bold');
-        doc.setTextColor(50, 60, 70);
-        doc.text(`RUT: ${formatRut(certificate.studentRut)}`, 148.5, 93, { align: 'center' });
-
-        doc.setFontSize(10);
-        doc.setFont('helvetica', 'normal');
-        doc.setTextColor(71, 85, 105);
-        doc.text('Ha completado satisfactoriamente el programa de capacitación', 148.5, 104, { align: 'center' });
-
-        // Add equipment/nomenclature and custom fields
-        let infoY = addEquipmentInfo(114);
-        infoY = addCustomFields(infoY);
-
-        doc.setFontSize(9);
-        doc.setTextColor(71, 85, 105);
-        doc.text(`Fecha de Emisión: ${issueDate}`, 20, 150);
-        doc.text(`Válido Hasta: ${expiryDate}`, 20, 157);
-        doc.text(`N° Certificado: ${certificate.certificateNumber}`, 20, 164);
-
-        // Add signers
-        addSigners(168);
-        addFooter();
-
-      } else if (templateConfig.style === 'classic') {
-        // Classic style - elegant without borders
-        doc.setFillColor(255, 253, 245);
-        doc.rect(0, 0, 297, 210, 'F');
-
-        // Add watermark before other elements
-        addWatermark();
-
-        // Add logos at top
-        addLogos(10);
-
-        doc.setTextColor(primaryRgb.r, primaryRgb.g, primaryRgb.b);
-        doc.setFontSize(36);
-        doc.setFont('helvetica', 'bold');
-        doc.text('CERTIFICADO', 148.5, 38, { align: 'center' });
-        doc.setFontSize(12);
-        doc.setFont('helvetica', 'normal');
-        doc.text('de Capacitación Profesional', 148.5, 45, { align: 'center' });
-
-        doc.setTextColor(secondaryRgb.r, secondaryRgb.g, secondaryRgb.b);
-        doc.setFontSize(16);
-        doc.setFont('helvetica', 'bold');
-        doc.text(certificate.certificateType.name.toUpperCase(), 148.5, 58, { align: 'center' });
-
-        doc.setTextColor(60, 60, 60);
-        doc.setFontSize(10);
-        doc.setFont('helvetica', 'normal');
-        doc.text('Por medio de la presente se certifica que:', 148.5, 68, { align: 'center' });
-
-        doc.setTextColor(30, 30, 30);
-        doc.setFontSize(20);
-        doc.setFont('helvetica', 'bold');
-        doc.text(certificate.studentName.toUpperCase(), 148.5, 80, { align: 'center' });
-
-        doc.setFontSize(13);
-        doc.setFont('helvetica', 'bold');
-        doc.setTextColor(50, 50, 50);
-        doc.text(`RUT: ${formatRut(certificate.studentRut)}`, 148.5, 91, { align: 'center' });
-
-        doc.setFontSize(10);
-        doc.setFont('helvetica', 'normal');
-        doc.setTextColor(60, 60, 60);
-        doc.text('Ha completado satisfactoriamente el programa de capacitación', 148.5, 102, { align: 'center' });
-
-        // Add equipment/nomenclature and custom fields
-        let classicInfoY = addEquipmentInfo(112);
-        classicInfoY = addCustomFields(classicInfoY);
-
-        doc.setFontSize(9);
-        doc.text(`Fecha de Emisión: ${issueDate}`, 20, 150);
-        doc.text(`Válido Hasta: ${expiryDate}`, 20, 157);
-        doc.text(`N° Certificado: ${certificate.certificateNumber}`, 20, 164);
-
-        // Add signers
-        addSigners(168);
-        addFooter();
-
-      } else if (templateConfig.style === 'minimal') {
-        // Minimal style - clean and simple without borders
-        doc.setFillColor(255, 255, 255);
-        doc.rect(0, 0, 297, 210, 'F');
-
-        // Add watermark before other elements
-        addWatermark();
-
-        // Add logos at top
-        addLogos(10);
-
-        doc.setTextColor(primaryRgb.r, primaryRgb.g, primaryRgb.b);
-        doc.setFontSize(36);
-        doc.setFont('helvetica', 'bold');
-        doc.text('CERTIFICADO', 148.5, 38, { align: 'center' });
-
-        doc.setTextColor(100, 100, 100);
-        doc.setFontSize(14);
-        doc.setFont('helvetica', 'normal');
-        doc.text(certificate.certificateType.name, 148.5, 48, { align: 'center' });
-
-        doc.setTextColor(60, 60, 60);
-        doc.setFontSize(10);
-        doc.text('Se certifica que', 148.5, 58, { align: 'center' });
-
-        doc.setTextColor(30, 30, 30);
-        doc.setFontSize(20);
-        doc.setFont('helvetica', 'bold');
-        doc.text(certificate.studentName, 148.5, 72, { align: 'center' });
-
-        doc.setFontSize(13);
-        doc.setFont('helvetica', 'bold');
-        doc.setTextColor(60, 60, 60);
-        doc.text(`RUT: ${formatRut(certificate.studentRut)}`, 148.5, 83, { align: 'center' });
-
-        doc.setFontSize(9);
-        doc.setFont('helvetica', 'normal');
-        doc.setTextColor(80, 80, 80);
-        doc.text('ha completado satisfactoriamente el programa de capacitación', 148.5, 94, { align: 'center' });
-
-        // Add equipment/nomenclature and custom fields
-        let minimalInfoY = addEquipmentInfo(104);
-        minimalInfoY = addCustomFields(minimalInfoY);
-
-        doc.setFontSize(8);
-        doc.setTextColor(120, 120, 120);
-        doc.text(`Emisión: ${issueDate}  |  Vencimiento: ${expiryDate}  |  N°: ${certificate.certificateNumber}`, 148.5, 135, { align: 'center' });
-
-        // Add signers
-        addSigners(155);
-        addFooter();
-
-      } else if (templateConfig.style === 'elegant') {
-        // Elegant style - refined without borders
-        doc.setFillColor(250, 250, 255);
-        doc.rect(0, 0, 297, 210, 'F');
-
-        // Add watermark before other elements
-        addWatermark();
-
-        // Add logos at top
-        addLogos(10);
-
-        doc.setTextColor(primaryRgb.r, primaryRgb.g, primaryRgb.b);
-        doc.setFontSize(36);
-        doc.setFont('helvetica', 'bold');
-        doc.text('CERTIFICADO', 148.5, 38, { align: 'center' });
-
-        doc.setTextColor(secondaryRgb.r, secondaryRgb.g, secondaryRgb.b);
-        doc.setFontSize(16);
-        doc.setFont('helvetica', 'bold');
-        doc.text(certificate.certificateType.name.toUpperCase(), 148.5, 50, { align: 'center' });
-
-        doc.setTextColor(80, 80, 80);
-        doc.setFontSize(10);
-        doc.setFont('helvetica', 'normal');
-        doc.text('Se certifica que:', 148.5, 62, { align: 'center' });
-
-        doc.setTextColor(30, 30, 30);
-        doc.setFontSize(22);
-        doc.setFont('helvetica', 'bold');
-        doc.text(certificate.studentName.toUpperCase(), 148.5, 74, { align: 'center' });
-
-        doc.setFontSize(14);
-        doc.setFont('helvetica', 'bold');
-        doc.setTextColor(50, 60, 70);
-        doc.text(`RUT: ${formatRut(certificate.studentRut)}`, 148.5, 85, { align: 'center' });
-
-        doc.setFontSize(10);
-        doc.setFont('helvetica', 'normal');
-        doc.setTextColor(80, 80, 80);
-        doc.text('Ha completado satisfactoriamente el programa de capacitación', 148.5, 96, { align: 'center' });
-
-        // Add equipment/nomenclature and custom fields
-        let elegantInfoY = addEquipmentInfo(106);
-        elegantInfoY = addCustomFields(elegantInfoY);
-
-        doc.setFontSize(9);
-        doc.text(`Fecha de Emisión: ${issueDate}`, 20, 150);
-        doc.text(`Válido Hasta: ${expiryDate}`, 20, 157);
-        doc.text(`N° Certificado: ${certificate.certificateNumber}`, 20, 164);
-
-        // Add signers
-        addSigners(168);
-        addFooter();
-      }
-
-      // QR Code (common to all styles) - positioned more to the right and lower
-      const validationUrl = `${req.protocol}://${req.get('host')}/validate/${id}`;
-      const qrDataUrl = await QRCode.toDataURL(validationUrl, { width: 200, margin: 1 });
-      doc.addImage(qrDataUrl, 'PNG', 250, 150, 35, 35);
-
-      doc.setFontSize(7);
-      doc.setTextColor(100, 100, 100);
-      doc.text('Escanee para validar', 267.5, 188, { align: 'center' });
-
-      const pdfBuffer = Buffer.from(doc.output('arraybuffer'));
       
       // Format filename: RUT-Nombre-Curso.pdf
       const sanitizedRut = certificate.studentRut.replace(/\./g, '').replace(/-/g, '');

@@ -38,7 +38,7 @@ import {
   type InsertCertificateTemplate,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, ilike, or, sql, desc, and, count, gte, lte, lt, inArray } from "drizzle-orm";
+import { eq, ilike, or, sql, desc, asc, and, count, gte, lte, lt, inArray } from "drizzle-orm";
 
 export interface IStorage {
   // Business operations
@@ -103,6 +103,7 @@ export interface IStorage {
     perPage?: number;
     businessId?: string;
   }): Promise<{ certificates: CertificateWithType[]; total: number }>;
+  getCertificatesByIds(ids: string[], businessId?: string): Promise<CertificateWithType[]>;
   getCertificate(id: string): Promise<CertificateWithType | undefined>;
   getCertificateByNumber(number: string): Promise<Certificate | undefined>;
   createCertificate(data: InsertCertificate & { certificateNumber: string; qrCode?: string; validationUrl?: string }): Promise<Certificate>;
@@ -530,7 +531,7 @@ export class DatabaseStorage implements IStorage {
       .from(certificates)
       .leftJoin(certificateTypes, eq(certificates.certificateTypeId, certificateTypes.id))
       .where(whereClause)
-      .orderBy(desc(certificates.createdAt))
+      .orderBy(desc(certificates.createdAt), desc(certificates.id))
       .limit(perPage)
       .offset(offset);
 
@@ -595,6 +596,25 @@ export class DatabaseStorage implements IStorage {
     return result.length > 0;
   }
 
+  async getCertificatesByIds(ids: string[], businessId?: string): Promise<CertificateWithType[]> {
+    if (ids.length === 0) return [];
+    const conditions: any[] = [inArray(certificates.id, ids)];
+    if (businessId) {
+      conditions.push(eq(certificates.businessId, businessId));
+    }
+    const result = await db
+      .select()
+      .from(certificates)
+      .leftJoin(certificateTypes, eq(certificates.certificateTypeId, certificateTypes.id))
+      .where(and(...conditions))
+      .orderBy(desc(certificates.createdAt), desc(certificates.id));
+
+    return result.map((r) => ({
+      ...r.certificates,
+      certificateType: r.certificate_types!,
+    }));
+  }
+
   async deleteCertificates(ids: string[]): Promise<number> {
     if (ids.length === 0) return 0;
     const result = await db.delete(certificates).where(inArray(certificates.id, ids)).returning();
@@ -655,7 +675,7 @@ export class DatabaseStorage implements IStorage {
       .from(certificates)
       .leftJoin(certificateTypes, eq(certificates.certificateTypeId, certificateTypes.id))
       .where(whereClause)
-      .orderBy(desc(certificates.createdAt));
+      .orderBy(desc(certificates.createdAt), desc(certificates.id));
 
     return result.map((r) => ({
       ...r.certificates,
@@ -687,7 +707,7 @@ export class DatabaseStorage implements IStorage {
       .from(certificates)
       .leftJoin(certificateTypes, eq(certificates.certificateTypeId, certificateTypes.id))
       .where(eq(certificates.importBatchId, batchId))
-      .orderBy(desc(certificates.createdAt));
+      .orderBy(desc(certificates.createdAt), desc(certificates.id));
 
     return result.map((r) => ({
       ...r.certificates,
@@ -746,7 +766,7 @@ export class DatabaseStorage implements IStorage {
       .from(certificates)
       .leftJoin(certificateTypes, eq(certificates.certificateTypeId, certificateTypes.id))
       .where(businessCondition)
-      .orderBy(desc(certificates.createdAt))
+      .orderBy(desc(certificates.createdAt), desc(certificates.id))
       .limit(10);
 
     const recentCertificates: CertificateWithType[] = recentResult.map((r) => ({
