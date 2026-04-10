@@ -5,6 +5,7 @@ import * as XLSX from "xlsx";
 import QRCode from "qrcode";
 import { jsPDF } from "jspdf";
 import JSZip from "jszip";
+import sharp from "sharp";
 import { nanoid } from "nanoid";
 import { storage } from "./storage";
 import { uploadFile } from "./supabaseStorage";
@@ -1328,7 +1329,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             const business = await storage.getBusiness(cert.businessId);
             businessLogoData = business ? { logoUrl: business.logoUrl } : null;
             if (business?.logoUrl) {
-              businessLogo = await fetchImageAsDataUrl(business.logoUrl, imageCache);
+              businessLogo = await fetchImageAsDataUrl(business.logoUrl, imageCache, 500, 500);
               businessLogoData = { logoUrl: businessLogo };
             }
           }
@@ -1336,11 +1337,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           // Clone signers/logos and resolve images with cache
           const resolvedSigners = await Promise.all(typeData.signers.map(async (s) => ({
             ...s,
-            signatureUrl: s.signatureUrl ? await fetchImageAsDataUrl(s.signatureUrl, imageCache) : s.signatureUrl,
+            signatureUrl: s.signatureUrl ? await fetchImageAsDataUrl(s.signatureUrl, imageCache, 250, 150) : s.signatureUrl,
           })));
           const resolvedLogos = await Promise.all(typeData.logos.map(async (l) => ({
             ...l,
-            logoUrl: l.logoUrl ? await fetchImageAsDataUrl(l.logoUrl, imageCache) : l.logoUrl,
+            logoUrl: l.logoUrl ? await fetchImageAsDataUrl(l.logoUrl, imageCache, 200, 200) : l.logoUrl,
           })));
           
           const pdfBuffer = await generateCertificatePdfBuffer({
@@ -1689,28 +1690,87 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return 'PNG';
   }
 
-  // Helper: Convert image URL (Supabase or base64 data URL) to base64 data URL for jsPDF
-  async function fetchImageAsDataUrl(url: string, cache?: Map<string, string>): Promise<string> {
-    // If it's already a base64 data URL, return as-is
+  /**
+   * Optimizes an image buffer using sharp:
+   * - Resizes to maxWidth/maxHeight (default 400px) keeping aspect ratio
+   * - Converts to JPEG quality 75 (or PNG if image has alpha & keepAlpha is true)
+   * This is critical for PDF size: raw logos can be 2000x2000px PNGs (1-5MB).
+   * After optimization, they become ~10-40KB JPEGs at screen-resolution for PDF.
+   */
+  async function optimizeImageBuffer(
+    inputBuffer: Buffer,
+    maxWidth = 400,
+    maxHeight = 400,
+  ): Promise<{ buffer: Buffer; format: 'JPEG' | 'PNG' }> {
+    try {
+      const metadata = await sharp(inputBuffer).metadata();
+      const hasAlpha = metadata.hasAlpha && metadata.format === 'png';
+      
+      let pipeline = sharp(inputBuffer)
+        .resize(maxWidth, maxHeight, { fit: 'inside', withoutEnlargement: true });
+      
+      if (hasAlpha) {
+        // Keep PNG for transparent images but compress
+        const result = await pipeline.png({ quality: 80, compressionLevel: 9 }).toBuffer();
+        return { buffer: result, format: 'PNG' };
+      } else {
+        // Convert to JPEG for maximum compression
+        const result = await pipeline.flatten({ background: '#ffffff' }).jpeg({ quality: 75, mozjpeg: true }).toBuffer();
+        return { buffer: result, format: 'JPEG' };
+      }
+    } catch (e) {
+      // Fallback: return original if sharp fails
+      console.error('sharp optimization failed, using original:', e);
+      return { buffer: inputBuffer, format: 'PNG' };
+    }
+  }
+
+  /**
+   * Fetches an image URL, optimizes it with sharp, and returns a data URL.
+   * Uses cache to avoid re-processing the same URL.
+   * maxWidth/maxHeight control target resolution for PDF embedding.
+   */
+  async function fetchImageAsDataUrl(
+    url: string,
+    cache?: Map<string, string>,
+    maxWidth = 400,
+    maxHeight = 400,
+  ): Promise<string> {
+    // Build a cache key that includes dimensions
+    const cacheKey = `${url}__${maxWidth}x${maxHeight}`;
+    
+    // If it's already a base64 data URL, optimize it in-place
     if (url.startsWith("data:")) {
-      return url;
+      if (cache?.has(cacheKey)) return cache.get(cacheKey)!;
+      try {
+        const base64Data = url.split(',')[1];
+        const inputBuffer = Buffer.from(base64Data, 'base64');
+        const { buffer: optimized, format } = await optimizeImageBuffer(inputBuffer, maxWidth, maxHeight);
+        const mimeType = format === 'JPEG' ? 'image/jpeg' : 'image/png';
+        const result = `data:${mimeType};base64,${optimized.toString('base64')}`;
+        cache?.set(cacheKey, result);
+        return result;
+      } catch (e) {
+        return url;
+      }
     }
     // Check cache first
-    if (cache?.has(url)) {
-      return cache.get(url)!;
+    if (cache?.has(cacheKey)) {
+      return cache.get(cacheKey)!;
     }
-    // Fetch remote URL and convert to base64
+    // Fetch remote URL, optimize with sharp, convert to data URL
     try {
       const response = await fetch(url);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const buffer = Buffer.from(await response.arrayBuffer());
-      const contentType = response.headers.get("content-type") || "image/png";
-      const dataUrl = `data:${contentType};base64,${buffer.toString("base64")}`;
-      cache?.set(url, dataUrl);
+      const rawBuffer = Buffer.from(await response.arrayBuffer());
+      const { buffer: optimized, format } = await optimizeImageBuffer(rawBuffer, maxWidth, maxHeight);
+      const mimeType = format === 'JPEG' ? 'image/jpeg' : 'image/png';
+      const dataUrl = `data:${mimeType};base64,${optimized.toString('base64')}`;
+      cache?.set(cacheKey, dataUrl);
       return dataUrl;
     } catch (e) {
       console.error("Error fetching image for PDF:", url, e);
-      return url; // Return original, jsPDF will handle the error
+      return url;
     }
   }
 
@@ -2138,7 +2198,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     // QR Code (common to all styles) - positioned more to the right and lower
     const validationUrl = `${validationBaseUrl}/validate/${certificate.id}`;
-    const qrDataUrl = await QRCode.toDataURL(validationUrl, { width: 200, margin: 1 });
+    const qrDataUrl = await QRCode.toDataURL(validationUrl, { width: 120, margin: 1 });
     doc.addImage(qrDataUrl, 'PNG', 250, 150, 35, 35);
 
     doc.setFontSize(7);
@@ -2176,7 +2236,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const business = await storage.getBusiness(certificate.businessId);
         businessData = business ? { logoUrl: business.logoUrl } : null;
         if (business?.logoUrl) {
-          businessLogo = await fetchImageAsDataUrl(business.logoUrl);
+          businessLogo = await fetchImageAsDataUrl(business.logoUrl, undefined, 500, 500);
           businessData = { logoUrl: businessLogo };
         }
       }
@@ -2184,14 +2244,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // Pre-fetch all signer signature images for PDF rendering
       for (const signer of signers) {
         if (signer.signatureUrl) {
-          (signer as any).signatureUrl = await fetchImageAsDataUrl(signer.signatureUrl);
+          (signer as any).signatureUrl = await fetchImageAsDataUrl(signer.signatureUrl, undefined, 250, 150);
         }
       }
       
       // Pre-fetch all logo images for PDF rendering
       for (const logo of logos) {
         if (logo.logoUrl) {
-          (logo as any).logoUrl = await fetchImageAsDataUrl(logo.logoUrl);
+          (logo as any).logoUrl = await fetchImageAsDataUrl(logo.logoUrl, undefined, 200, 200);
         }
       }
       
